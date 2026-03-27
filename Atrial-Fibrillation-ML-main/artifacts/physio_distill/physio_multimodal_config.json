@@ -1,0 +1,98 @@
+{
+  "ppg": {
+    "signal_name": "ppg",
+    "signal_column": "PPG",
+    "sample_rate_hz": 125.0,
+    "bandpass": {
+      "low_hz": 0.5,
+      "high_hz": 8.0,
+      "order": 4,
+      "stopband_attenuation_db": 20.0
+    },
+    "segment": {
+      "length_seconds": 30.0,
+      "stride_seconds": 30.0,
+      "zscore_normalize": true,
+      "use_adaptive_motion_cancellation": true
+    },
+    "quality": {
+      "heart_band_hz": [
+        0.5,
+        3.5
+      ],
+      "total_band_hz": [
+        0.1,
+        8.0
+      ],
+      "min_heart_band_energy_ratio": 0.45,
+      "max_abs_skewness": 2.0,
+      "min_template_correlation": 0.45,
+      "max_acc_variance": null,
+      "min_peak_count": 8
+    },
+    "peaks": {
+      "min_hr_bpm": 35.0,
+      "max_hr_bpm": 220.0,
+      "prominence_scale": 0.3,
+      "min_absolute_prominence": 0.02,
+      "refine_radius_seconds": 0.2
+    },
+    "acc_columns": [
+      "ACC_X",
+      "ACC_Y",
+      "ACC_Z"
+    ]
+  },
+  "ecg": {
+    "signal_name": "ecg",
+    "signal_column": "ECG",
+    "sample_rate_hz": 125.0,
+    "bandpass": {
+      "low_hz": 0.5,
+      "high_hz": 40.0,
+      "order": 4,
+      "stopband_attenuation_db": 20.0
+    },
+    "segment": {
+      "length_seconds": 30.0,
+      "stride_seconds": 30.0,
+      "zscore_normalize": true,
+      "use_adaptive_motion_cancellation": true
+    },
+    "quality": {
+      "heart_band_hz": [
+        0.5,
+        6.0
+      ],
+      "total_band_hz": [
+        0.1,
+        40.0
+      ],
+      "min_heart_band_energy_ratio": 0.25,
+      "max_abs_skewness": 4.5,
+      "min_template_correlation": 0.35,
+      "max_acc_variance": null,
+      "min_peak_count": 8
+    },
+    "peaks": {
+      "min_hr_bpm": 35.0,
+      "max_hr_bpm": 240.0,
+      "prominence_scale": 0.4,
+      "min_absolute_prominence": 0.04,
+      "refine_radius_seconds": 0.12
+    },
+    "acc_columns": [
+      "ACC_X",
+      "ACC_Y",
+      "ACC_Z"
+    ]
+  },
+  "resp": {
+    "sample_rate_hz": 125.0,
+    "low_hz": 0.05,
+    "high_hz": 0.7,
+    "order": 4,
+    "stopband_attenuation_db": 20.0
+  },
+  "max_ibi_length": 128
+}
