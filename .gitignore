@@ -1,0 +1,22 @@
+.DS_Store
+**/.DS_Store
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pt
+**/*.pth
+**/*.npz
+**/*.mat
+
+# Large generated outputs and experiment artifacts
+Atrial-Fibrillation-ML-main/artifacts/
+
+# Raw datasets kept locally, not in git
+Atrial-Fibrillation-ML-main/zenodo_longterm_af/
+Atrial-Fibrillation-ML-main/mimic_perform_af_csv/
+Atrial-Fibrillation-ML-main/mimic_perform_non_af_csv/
+Atrial-Fibrillation-ML-main/mimic_perform_af_wfdb/
+Atrial-Fibrillation-ML-main/mimic_perform_non_af_wfdb/
+mimic_perform_af_csv/
+mimic_perform_non_af_csv/
