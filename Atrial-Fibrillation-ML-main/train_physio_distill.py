@@ -73,6 +73,8 @@ AUX_TARGET_COLUMNS = [
     "resp_ibi_corr",
 ]
 
+RAW_QUALITY_SCORE_COLUMN = "ppg_quality_score_raw"
+
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -210,7 +212,11 @@ def stratified_record_split(
     test_record_count: int = 5,
     seed: int = 42,
 ) -> dict[str, list[str]]:
-    records = summary_df[["record_id", "label"]].drop_duplicates().reset_index(drop=True)
+    records = (
+        summary_df.groupby("record_id", as_index=False)
+        .agg(label=("label", "max"))
+        .reset_index(drop=True)
+    )
     pos_records = records.loc[records["label"] == 1, "record_id"].tolist()
     neg_records = records.loc[records["label"] == 0, "record_id"].tolist()
 
@@ -249,12 +255,12 @@ def fill_and_scale_columns(
 ) -> tuple[pd.DataFrame, FeatureStats]:
     features = summary_df[columns].copy()
     train_features = features.loc[split_masks["train"]]
-    medians = train_features.median(axis=0).to_numpy(dtype=np.float32)
+    medians = np.nan_to_num(train_features.median(axis=0).to_numpy(dtype=np.float32), nan=0.0)
     features = features.fillna(dict(zip(columns, medians)))
 
     train_filled = features.loc[split_masks["train"]]
-    means = train_filled.mean(axis=0).to_numpy(dtype=np.float32)
-    stds = train_filled.std(axis=0).replace(0.0, 1.0).to_numpy(dtype=np.float32)
+    means = np.nan_to_num(train_filled.mean(axis=0).to_numpy(dtype=np.float32), nan=0.0)
+    stds = np.nan_to_num(train_filled.std(axis=0).replace(0.0, 1.0).to_numpy(dtype=np.float32), nan=1.0)
     features = (features - means) / stds
 
     scaled_df = summary_df.copy()
@@ -268,13 +274,13 @@ def prepare_aux_targets(
 ) -> tuple[pd.DataFrame, FeatureStats]:
     targets = summary_df[AUX_TARGET_COLUMNS].copy()
     train_targets = targets.loc[split_masks["train"]]
-    medians = train_targets.median(axis=0).to_numpy(dtype=np.float32)
+    medians = np.nan_to_num(train_targets.median(axis=0).to_numpy(dtype=np.float32), nan=0.0)
     mask = targets.notna().to_numpy(dtype=bool)
     targets = targets.fillna(dict(zip(AUX_TARGET_COLUMNS, medians)))
 
     train_filled = targets.loc[split_masks["train"]]
-    means = train_filled.mean(axis=0).to_numpy(dtype=np.float32)
-    stds = train_filled.std(axis=0).replace(0.0, 1.0).to_numpy(dtype=np.float32)
+    means = np.nan_to_num(train_filled.mean(axis=0).to_numpy(dtype=np.float32), nan=0.0)
+    stds = np.nan_to_num(train_filled.std(axis=0).replace(0.0, 1.0).to_numpy(dtype=np.float32), nan=1.0)
     targets = (targets - means) / stds
 
     normalized_df = summary_df.copy()
@@ -358,7 +364,7 @@ class DistillationLoss(nn.Module):
         )
         pt = torch.exp(-bce)
         focal = ((1.0 - pt) ** self.gamma) * bce
-        sample_weights = 0.6 + 0.4 * quality_scores
+        sample_weights = (0.6 + 0.4 * quality_scores).clamp(min=0.2, max=1.0)
         return (focal * sample_weights).mean()
 
     def forward(
@@ -503,8 +509,12 @@ def prepare_dataloaders(
     label_arrays = {}
 
     aux_valid_columns = [f"{column}_valid" for column in AUX_TARGET_COLUMNS]
+    quality_column = RAW_QUALITY_SCORE_COLUMN if RAW_QUALITY_SCORE_COLUMN in summary_df.columns else "ppg_quality_score"
 
     for split_name, mask in split_masks.items():
+        quality_scores = summary_df.loc[mask, quality_column].to_numpy(dtype=np.float32)
+        quality_scores = np.nan_to_num(quality_scores, nan=0.5, posinf=1.0, neginf=0.0)
+        quality_scores = np.clip(quality_scores, 0.0, 1.0)
         dataset = PhysioDataset(
             ppg_waveforms=arrays["ppg_segments"][mask],
             ppg_ibi=arrays["ppg_ibi_sequences"][mask],
@@ -516,7 +526,7 @@ def prepare_dataloaders(
             aux_targets=summary_df.loc[mask, AUX_TARGET_COLUMNS].to_numpy(dtype=np.float32),
             aux_mask=summary_df.loc[mask, aux_valid_columns].to_numpy(dtype=bool),
             labels=summary_df.loc[mask, "label"].to_numpy(dtype=np.float32),
-            quality_scores=summary_df.loc[mask, "ppg_quality_score"].to_numpy(dtype=np.float32),
+            quality_scores=quality_scores,
             records=summary_df.loc[mask, "record_id"].to_numpy(),
             augment=PPGAugment(arrays["ppg_segments"].shape[1]) if split_name == "train" else None,
         )
@@ -626,6 +636,8 @@ def main() -> None:
         seed=args.seed,
     )
     split_masks = create_split_masks(summary_df, split_records)
+    if RAW_QUALITY_SCORE_COLUMN not in summary_df.columns and "ppg_quality_score" in summary_df.columns:
+        summary_df[RAW_QUALITY_SCORE_COLUMN] = summary_df["ppg_quality_score"].astype(np.float32)
 
     summary_df, student_stats = fill_and_scale_columns(summary_df, STUDENT_FEATURE_COLUMNS, split_masks)
     summary_df, teacher_stats = fill_and_scale_columns(summary_df, TEACHER_FEATURE_COLUMNS, split_masks)
