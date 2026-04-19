@@ -7,6 +7,7 @@ from typing import Any
 import h5py
 import numpy as np
 import pandas as pd
+from scipy.io import loadmat
 
 
 SECONDS_PER_DAY = 24 * 60 * 60
@@ -80,7 +81,7 @@ def _parse_day_time(day_value: int | str, time_text: str) -> float:
     return (int(day_value) - 1) * SECONDS_PER_DAY + hours * 3600 + minutes * 60 + seconds
 
 
-def load_zenodo_ecg_mat(ecg_mat_path: Path) -> ZenodoECGRecord:
+def _load_hdf5_ecg_mat(ecg_mat_path: Path) -> ZenodoECGRecord:
     with h5py.File(ecg_mat_path, "r") as file_handle:
         header = _signal_header_to_dict(file_handle, file_handle["signalHeader"])
         signal_labels = header["signal_labels"]
@@ -103,6 +104,64 @@ def load_zenodo_ecg_mat(ecg_mat_path: Path) -> ZenodoECGRecord:
         start_day=start_day,
         start_time_text=start_time_text,
     )
+
+
+def _mat_value_to_scalar(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        if value.size == 1:
+            return _mat_value_to_scalar(value.reshape(-1)[0])
+        if value.dtype.kind in {"U", "S"}:
+            return "".join(str(item) for item in value.reshape(-1))
+        return value
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return value
+
+
+def _load_v5_ecg_mat(ecg_mat_path: Path) -> ZenodoECGRecord:
+    mat = loadmat(
+        ecg_mat_path,
+        variable_names=[
+            "signalHeader",
+            "recording_startday",
+            "recording_starttime",
+            "ECG",
+            "QRSindex",
+            "rr",
+            "AF_annotation",
+        ],
+        squeeze_me=True,
+        struct_as_record=False,
+    )
+    signal_header = np.atleast_1d(mat["signalHeader"]).reshape(-1)
+    label_to_rate: dict[str, float] = {}
+    for item in signal_header:
+        label = str(_mat_value_to_scalar(getattr(item, "signal_labels")))
+        sample_rate = float(_mat_value_to_scalar(getattr(item, "samples_in_record")))
+        label_to_rate[label] = sample_rate
+
+    start_day = int(str(_mat_value_to_scalar(mat["recording_startday"])).strip())
+    start_time_text = str(_mat_value_to_scalar(mat["recording_starttime"])).strip()
+    ecg = np.asarray(mat["ECG"], dtype=np.float32).reshape(-1)
+    qrs_index = np.asarray(mat["QRSindex"], dtype=np.float32).reshape(-1)
+    rr_seconds = np.asarray(mat["rr"], dtype=np.float32).reshape(-1)
+    af_annotation = np.asarray(mat["AF_annotation"], dtype=np.float32).reshape(-1)
+
+    return ZenodoECGRecord(
+        ecg=ecg,
+        qrs_index=qrs_index,
+        rr_seconds=rr_seconds,
+        af_annotation=af_annotation,
+        sample_rate_hz=label_to_rate["ECG"],
+        start_day=start_day,
+        start_time_text=start_time_text,
+    )
+
+
+def load_zenodo_ecg_mat(ecg_mat_path: Path) -> ZenodoECGRecord:
+    if h5py.is_hdf5(ecg_mat_path):
+        return _load_hdf5_ecg_mat(ecg_mat_path)
+    return _load_v5_ecg_mat(ecg_mat_path)
 
 
 def load_zenodo_ppg_mat(ppg_mat_path: Path, ecg_record: ZenodoECGRecord | None = None) -> tuple[list[ZenodoPPGSegment], dict[str, list[Any]]]:

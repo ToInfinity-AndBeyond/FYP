@@ -18,5 +18,11 @@ Atrial-Fibrillation-ML-main/mimic_perform_af_csv/
 Atrial-Fibrillation-ML-main/mimic_perform_non_af_csv/
 Atrial-Fibrillation-ML-main/mimic_perform_af_wfdb/
 Atrial-Fibrillation-ML-main/mimic_perform_non_af_wfdb/
+Atrial-Fibrillation-ML-main/mimic_perform_downloads/
+Atrial-Fibrillation-ML-main/slurm_logs/
 mimic_perform_af_csv/
 mimic_perform_non_af_csv/
+
+# Cluster logs
+slurm_logs/
+slurm20-*.out

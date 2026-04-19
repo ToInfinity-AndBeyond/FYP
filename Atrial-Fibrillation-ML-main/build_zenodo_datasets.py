@@ -24,6 +24,7 @@ from signal_pipeline import (
     default_ecg_config,
     default_ppg_config,
     load_quality_overrides,
+    minimum_segment_samples,
     process_segment,
     save_dataset_bundle,
 )
@@ -149,6 +150,10 @@ def build_subject_ppg_rows(
 
     rows: list[dict[str, Any]] = []
     signals: list[np.ndarray] = []
+    segment_length_samples = int(round(window_length_sec * ppg_config.sample_rate_hz))
+    skipped_short_windows = 0
+    skipped_incomplete_windows = 0
+    min_ppg_samples = minimum_segment_samples(ppg_config)
     total_windows = int(window_label_df.shape[0])
     start_time = time.time()
     print(
@@ -166,6 +171,12 @@ def build_subject_ppg_rows(
         )
         ppg_resampled = resample_1d(ppg_window, segment.ppg_sample_rate_hz, ppg_config.sample_rate_hz)
         acc_resampled = resample_acc(acc_window, segment.acc_sample_rate_hz, ppg_config.sample_rate_hz)
+        if ppg_resampled.size < min_ppg_samples:
+            skipped_short_windows += 1
+            continue
+        if ppg_resampled.size != segment_length_samples:
+            skipped_incomplete_windows += 1
+            continue
         processed = process_segment(ppg_resampled, ppg_config, acc_segment=acc_resampled)
 
         row = {
@@ -198,6 +209,8 @@ def build_subject_ppg_rows(
                 f"[zenodo-ppg] subject {subject_id}: "
                 f"{window_counter}/{total_windows} ({percent:5.1f}%) "
                 f"accepted={accepted_count} "
+                f"skipped_short={skipped_short_windows} "
+                f"skipped_incomplete={skipped_incomplete_windows} "
                 f"elapsed={format_duration(elapsed)} "
                 f"eta={format_duration(eta_seconds)}",
                 flush=True,
@@ -247,6 +260,10 @@ def build_subject_multimodal_rows(
     }
 
     segment_length_samples = int(round(window_length_sec * ppg_config.sample_rate_hz))
+    min_ppg_samples = minimum_segment_samples(ppg_config)
+    min_ecg_samples = minimum_segment_samples(ecg_config)
+    skipped_short_windows = 0
+    skipped_incomplete_windows = 0
     total_windows = int(window_label_df.shape[0])
     start_time = time.time()
     print(
@@ -271,6 +288,12 @@ def build_subject_multimodal_rows(
         ppg_resampled = resample_1d(ppg_window, segment.ppg_sample_rate_hz, ppg_config.sample_rate_hz)
         ecg_resampled = resample_1d(ecg_window, ecg_record.sample_rate_hz, ecg_config.sample_rate_hz)
         acc_resampled = resample_acc(acc_window, segment.acc_sample_rate_hz, ppg_config.sample_rate_hz)
+        if ppg_resampled.size < min_ppg_samples or ecg_resampled.size < min_ecg_samples:
+            skipped_short_windows += 1
+            continue
+        if ppg_resampled.size != segment_length_samples or ecg_resampled.size != segment_length_samples:
+            skipped_incomplete_windows += 1
+            continue
 
         ppg_processed = process_segment(ppg_resampled, ppg_config, acc_segment=acc_resampled)
         ecg_processed = process_segment(ecg_resampled, ecg_config)
@@ -348,6 +371,8 @@ def build_subject_multimodal_rows(
                 f"[zenodo-physio] subject {subject_id}: "
                 f"{window_counter}/{total_windows} ({percent:5.1f}%) "
                 f"joint_accepted={joint_accepted_count} "
+                f"skipped_short={skipped_short_windows} "
+                f"skipped_incomplete={skipped_incomplete_windows} "
                 f"elapsed={format_duration(elapsed)} "
                 f"eta={format_duration(eta_seconds)}",
                 flush=True,

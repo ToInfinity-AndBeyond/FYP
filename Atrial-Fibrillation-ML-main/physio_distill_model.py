@@ -105,6 +105,29 @@ class GatedFusion(nn.Module):
         return self.head(torch.cat(gated_embeddings, dim=1))
 
 
+class ECGTeacherNet(nn.Module):
+    def __init__(self, feature_dim: int):
+        super().__init__()
+        self.ecg_encoder = WaveformEncoder1d(in_channels=1, out_dim=64, d_model=96)
+        self.rhythm_encoder = RhythmSequenceEncoder(out_dim=64)
+        self.feature_encoder = FeatureEncoder(feature_dim, out_dim=64)
+        self.fusion = GatedFusion(branch_count=3, branch_dim=64, hidden_dim=128)
+        self.classifier = nn.Linear(128, 1)
+
+    def forward(
+        self,
+        ecg_waveform: torch.Tensor,
+        ecg_ibi: torch.Tensor,
+        ecg_features: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        ecg_embedding = self.ecg_encoder(ecg_waveform.unsqueeze(1))
+        rhythm_embedding = self.rhythm_encoder(ecg_ibi)
+        feature_embedding = self.feature_encoder(ecg_features)
+        fused_embedding = self.fusion(ecg_embedding, rhythm_embedding, feature_embedding)
+        logit = self.classifier(fused_embedding).squeeze(1)
+        return logit, fused_embedding
+
+
 class PhysiologyAwareDistillationNet(nn.Module):
     def __init__(
         self,

@@ -199,8 +199,8 @@ def odd_window_length(length: int, minimum: int = 5) -> int:
     return length
 
 
-def bandpass_cheby2(signal_values: np.ndarray, config: SignalPipelineConfig) -> np.ndarray:
-    sos = sp_signal.cheby2(
+def build_bandpass_sos(config: SignalPipelineConfig) -> np.ndarray:
+    return sp_signal.cheby2(
         config.bandpass.order,
         config.bandpass.stopband_attenuation_db,
         [config.bandpass.low_hz, config.bandpass.high_hz],
@@ -208,6 +208,27 @@ def bandpass_cheby2(signal_values: np.ndarray, config: SignalPipelineConfig) -> 
         fs=config.sample_rate_hz,
         output="sos",
     )
+
+
+def bandpass_padlen(config: SignalPipelineConfig) -> int:
+    sos = build_bandpass_sos(config)
+    zero_num = int(np.isclose(sos[:, 2], 0.0).sum())
+    zero_den = int(np.isclose(sos[:, 5], 0.0).sum())
+    return int(3 * (2 * len(sos) + 1 - min(zero_num, zero_den)))
+
+
+def minimum_segment_samples(config: SignalPipelineConfig) -> int:
+    return bandpass_padlen(config) + 1
+
+
+def bandpass_cheby2(signal_values: np.ndarray, config: SignalPipelineConfig) -> np.ndarray:
+    signal_values = np.asarray(signal_values, dtype=float).reshape(-1)
+    padlen = bandpass_padlen(config)
+    if signal_values.size <= padlen:
+        raise ValueError(
+            f"segment too short for bandpass filter: len={signal_values.size}, required>{padlen}"
+        )
+    sos = build_bandpass_sos(config)
     return sp_signal.sosfiltfilt(sos, signal_values)
 
 
@@ -375,8 +396,9 @@ def estimate_heart_band_energy_ratio(signal_values: np.ndarray, config: SignalPi
     band_mask = (frequencies >= config.quality.heart_band_hz[0]) & (frequencies <= config.quality.heart_band_hz[1])
     total_mask = (frequencies >= config.quality.total_band_hz[0]) & (frequencies <= config.quality.total_band_hz[1])
 
-    band_energy = float(np.trapz(psd[band_mask], frequencies[band_mask])) if np.any(band_mask) else 0.0
-    total_energy = float(np.trapz(psd[total_mask], frequencies[total_mask])) if np.any(total_mask) else 0.0
+    integrate = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+    band_energy = float(integrate(psd[band_mask], frequencies[band_mask])) if np.any(band_mask) else 0.0
+    total_energy = float(integrate(psd[total_mask], frequencies[total_mask])) if np.any(total_mask) else 0.0
     return band_energy / (total_energy + EPS)
 
 
