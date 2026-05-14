@@ -5,17 +5,17 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=36:00:00
-#SBATCH --output=slurm_logs/mimic_ext_p00_p01_p02_ppg_mil_v2_%j.out
+#SBATCH --output=slurm-%x-%j.out
 
 set -euo pipefail
 
-PROJECT_DIR="/homes/mc1920/FYP/Atrial-Fibrillation-ML-main"
-VENV_PATH="/vol/bitbucket/mc1920/fypenv"
-OUTPUT_DIR="/vol/bitbucket/mc1920/mimic_ext_p00_p01_p02_ppg_record_mil_v2_experiment"
+PROJECT_DIR="${PROJECT_DIR:-/homes/mc1920/FYP/Atrial-Fibrillation-ML-main}"
+VENV_PATH="${VENV_PATH:-/vol/bitbucket/mc1920/fypenv}"
+OUTPUT_DIR="${OUTPUT_DIR:-/vol/bitbucket/mc1920/mimic_ext_p00_p01_p02_ppg_record_mil_v2_experiment}"
 DATA_ROOTS=(
-  "/vol/bitbucket/mc1920/mimic_ext_ppg_p00_by_fold"
-  "/vol/bitbucket/mc1920/mimic_ext_ppg_p01_by_fold"
-  "/vol/bitbucket/mc1920/mimic_ext_ppg_p02_by_fold"
+  "${DATA_ROOT_P00:-/vol/bitbucket/mc1920/mimic_ext_ppg_p00_by_fold}"
+  "${DATA_ROOT_P01:-/vol/bitbucket/mc1920/mimic_ext_ppg_p01_by_fold}"
+  "${DATA_ROOT_P02:-/vol/bitbucket/mc1920/mimic_ext_ppg_p02_by_fold}"
 )
 
 mkdir -p "${PROJECT_DIR}/slurm_logs"

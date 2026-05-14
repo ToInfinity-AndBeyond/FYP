@@ -70,6 +70,20 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
+## Imperial GPU Cluster
+
+If you are running this repo on the Department of Computing GPU cluster, use the repo-local guide in
+[`docs/imperial_gpu_cluster.md`](docs/imperial_gpu_cluster.md).
+
+The shortest sanity check after logging into a cluster head node is:
+
+```bash
+cd /homes/${USER}/FYP/Atrial-Fibrillation-ML-main
+PROJECT_DIR=/homes/${USER}/FYP/Atrial-Fibrillation-ML-main \
+VENV_PATH=/vol/bitbucket/${USER}/myvenv \
+sbatch run_ppg_gpu.slurm
+```
+
 ## Build the segment dataset
 
 ```bash

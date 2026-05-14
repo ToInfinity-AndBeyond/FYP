@@ -1,0 +1,345 @@
+{
+  "output_dir": "/vol/bitbucket/mc1920/mimic_ext_p00_p01_p02_ppg_1to2_20260423_171429",
+  "analysis_dir": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/mimic_ext_p00_p01_p02_ppg_1to2_20260423_171429",
+  "operating_threshold": 0.781,
+  "group_column": "record_id",
+  "top_k_list": [
+    3,
+    5
+  ],
+  "levels": {
+    "segment_test": {
+      "at_operating_threshold": {
+        "threshold": 0.781,
+        "n": 75841,
+        "actual_positive": 6844,
+        "actual_negative": 68997,
+        "accuracy": 0.9523344892604264,
+        "sensitivity": 0.8924605493863238,
+        "specificity": 0.9582735481252808,
+        "precision": 0.6796483809947702,
+        "f1": 0.7716505590297518,
+        "tn": 66118,
+        "fp": 2879,
+        "fn": 736,
+        "tp": 6108,
+        "predicted_positive": 8987,
+        "predicted_negative": 66854
+      },
+      "best_f1_analysis_only": {
+        "threshold": 0.876,
+        "accuracy": 0.9628565024195356,
+        "sensitivity": 0.8413208649912332,
+        "specificity": 0.9749119526935953,
+        "precision": 0.7688609961276539,
+        "f1": 0.8034605455940835,
+        "tn": 67266.0,
+        "fp": 1731.0,
+        "fn": 1086.0,
+        "tp": 5758.0,
+        "predicted_positive": 7489.0,
+        "predicted_negative": 68352.0
+      },
+      "threshold_sweep_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/mimic_ext_p00_p01_p02_ppg_1to2_20260423_171429/segment_test_threshold_sweep.csv"
+    },
+    "record_test": {
+      "at_operating_threshold": {
+        "threshold": 0.781,
+        "n": 5314,
+        "actual_positive": 692,
+        "actual_negative": 4622,
+        "accuracy": 0.9514490026345502,
+        "sensitivity": 0.8410404624277457,
+        "specificity": 0.9679792297706621,
+        "precision": 0.7972602739726027,
+        "f1": 0.8185654008438819,
+        "tn": 4474,
+        "fp": 148,
+        "fn": 110,
+        "tp": 582,
+        "predicted_positive": 730,
+        "predicted_negative": 4584
+      },
+      "best_f1_analysis_only": {
+        "threshold": 0.856,
+        "accuracy": 0.9582235604064735,
+        "sensitivity": 0.8106936416184971,
+        "specificity": 0.9803115534400693,
+        "precision": 0.8604294478527608,
+        "f1": 0.8348214285714285,
+        "tn": 4531.0,
+        "fp": 91.0,
+        "fn": 131.0,
+        "tp": 561.0,
+        "predicted_positive": 652.0,
+        "predicted_negative": 4662.0
+      },
+      "threshold_sweep_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/mimic_ext_p00_p01_p02_ppg_1to2_20260423_171429/record_test_threshold_sweep.csv"
+    },
+    "segment_val": {
+      "at_operating_threshold": {
+        "threshold": 0.781,
+        "n": 96168,
+        "actual_positive": 10507,
+        "actual_negative": 85661,
+        "accuracy": 0.9747421179602362,
+        "sensitivity": 0.8492433615684781,
+        "specificity": 0.9901355342571299,
+        "precision": 0.9134930384930385,
+        "f1": 0.8801972872996301,
+        "tn": 84816,
+        "fp": 845,
+        "fn": 1584,
+        "tp": 8923,
+        "predicted_positive": 9768,
+        "predicted_negative": 86400
+      },
+      "best_f1_analysis_only": {
+        "threshold": 0.836,
+        "accuracy": 0.976499459279594,
+        "sensitivity": 0.8311601789283335,
+        "specificity": 0.9943264729573551,
+        "precision": 0.9472827855515783,
+        "f1": 0.8854303964311061,
+        "tn": 85175.0,
+        "fp": 486.0,
+        "fn": 1774.0,
+        "tp": 8733.0,
+        "predicted_positive": 9219.0,
+        "predicted_negative": 86949.0
+      },
+      "threshold_sweep_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/mimic_ext_p00_p01_p02_ppg_1to2_20260423_171429/segment_val_threshold_sweep.csv"
+    },
+    "record_val": {
+      "at_operating_threshold": {
+        "threshold": 0.781,
+        "n": 5768,
+        "actual_positive": 895,
+        "actual_negative": 4873,
+        "accuracy": 0.9765950069348127,
+        "sensitivity": 0.88268156424581,
+        "specificity": 0.9938436281551406,
+        "precision": 0.9634146341463414,
+        "f1": 0.9212827988338192,
+        "tn": 4843,
+        "fp": 30,
+        "fn": 105,
+        "tp": 790,
+        "predicted_positive": 820,
+        "predicted_negative": 4948
+      },
+      "best_f1_analysis_only": {
+        "threshold": 0.781,
+        "accuracy": 0.9765950069348127,
+        "sensitivity": 0.88268156424581,
+        "specificity": 0.9938436281551406,
+        "precision": 0.9634146341463414,
+        "f1": 0.9212827988338192,
+        "tn": 4843.0,
+        "fp": 30.0,
+        "fn": 105.0,
+        "tp": 790.0,
+        "predicted_positive": 820.0,
+        "predicted_negative": 4948.0
+      },
+      "threshold_sweep_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/mimic_ext_p00_p01_p02_ppg_1to2_20260423_171429/record_val_threshold_sweep.csv"
+    }
+  },
+  "aggregation": {
+    "predictions_long_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/mimic_ext_p00_p01_p02_ppg_1to2_20260423_171429/aggregation_predictions_long.csv",
+    "sweeps_long_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/mimic_ext_p00_p01_p02_ppg_1to2_20260423_171429/aggregation_threshold_sweeps_long.csv",
+    "summary_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/mimic_ext_p00_p01_p02_ppg_1to2_20260423_171429/aggregation_method_summary.csv",
+    "best_method_by_test_f1_at_val_threshold": {
+      "method": "mean",
+      "group_column": "record_id",
+      "val_selected_threshold": 0.781,
+      "val_f1": 0.9212827988338192,
+      "val_precision": 0.9634146341463414,
+      "val_sensitivity": 0.88268156424581,
+      "val_specificity": 0.9938436281551406,
+      "test_f1_at_val_threshold": 0.8185654008438819,
+      "test_precision_at_val_threshold": 0.7972602739726027,
+      "test_sensitivity_at_val_threshold": 0.8410404624277457,
+      "test_specificity_at_val_threshold": 0.9679792297706621,
+      "test_accuracy_at_val_threshold": 0.9514490026345502,
+      "test_fp_at_val_threshold": 148,
+      "test_fn_at_val_threshold": 110,
+      "test_best_f1_analysis_only": 0.8348214285714285,
+      "test_best_threshold_analysis_only": 0.856
+    }
+  },
+  "false_positive_analysis": {
+    "segment_test": {
+      "operating_threshold": 0.781,
+      "fp_count": 2879,
+      "negative_examples": 68997,
+      "fp_rate_among_negatives": 0.04172645187471919,
+      "mean_fp_prob": 0.886055996033345,
+      "median_fp_prob": 0.8960673,
+      "max_fp_prob": 0.96795666,
+      "top_fp_groups": [
+        {
+          "record_id": "3967075_0018::event_51",
+          "fp_count": 27,
+          "max_prob": 0.9626883,
+          "mean_prob": 0.9459465033333333,
+          "label": 0.0
+        },
+        {
+          "record_id": "3967075_0008::event_10",
+          "fp_count": 27,
+          "max_prob": 0.946784,
+          "mean_prob": 0.9212456096296295,
+          "label": 0.0
+        },
+        {
+          "record_id": "3967075_0010::event_21",
+          "fp_count": 27,
+          "max_prob": 0.93524957,
+          "mean_prob": 0.9055260474074074,
+          "label": 0.0
+        },
+        {
+          "record_id": "3967075_0008::event_22",
+          "fp_count": 27,
+          "max_prob": 0.91435814,
+          "mean_prob": 0.8734540074074074,
+          "label": 0.0
+        },
+        {
+          "record_id": "3967075_0018::event_57",
+          "fp_count": 26,
+          "max_prob": 0.9645998,
+          "mean_prob": 0.948288025,
+          "label": 0.0
+        },
+        {
+          "record_id": "3967075_0010::event_25",
+          "fp_count": 26,
+          "max_prob": 0.9636779,
+          "mean_prob": 0.942869603076923,
+          "label": 0.0
+        },
+        {
+          "record_id": "3967075_0018::event_54",
+          "fp_count": 26,
+          "max_prob": 0.9602534,
+          "mean_prob": 0.931579981923077,
+          "label": 0.0
+        },
+        {
+          "record_id": "3967075_0008::event_9",
+          "fp_count": 26,
+          "max_prob": 0.9478321,
+          "mean_prob": 0.9132888884615386,
+          "label": 0.0
+        },
+        {
+          "record_id": "3967075_0010::event_23",
+          "fp_count": 26,
+          "max_prob": 0.94341534,
+          "mean_prob": 0.9150379638461538,
+          "label": 0.0
+        },
+        {
+          "record_id": "3967075_0008::event_12",
+          "fp_count": 26,
+          "max_prob": 0.9299927,
+          "mean_prob": 0.903153375,
+          "label": 0.0
+        }
+      ],
+      "top_fp_subjects": [],
+      "false_positive_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/mimic_ext_p00_p01_p02_ppg_1to2_20260423_171429/segment_test_false_positives.csv",
+      "by_group_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/mimic_ext_p00_p01_p02_ppg_1to2_20260423_171429/segment_test_false_positives_by_group.csv",
+      "by_subject_csv": null,
+      "by_quality_bin_csv": null
+    },
+    "record_test": {
+      "operating_threshold": 0.781,
+      "fp_count": 148,
+      "negative_examples": 4622,
+      "fp_rate_among_negatives": 0.03202077022933795,
+      "mean_fp_prob": 0.8750891552583592,
+      "median_fp_prob": 0.874656468629837,
+      "max_fp_prob": 0.961881458759308,
+      "top_fp_groups": [
+        {
+          "record_id": "3967075_0018::event_30",
+          "fp_count": 1,
+          "max_prob": 0.961881458759308,
+          "mean_prob": 0.961881458759308,
+          "label": 0
+        },
+        {
+          "record_id": "3967075_0018::event_42",
+          "fp_count": 1,
+          "max_prob": 0.9597461223602296,
+          "mean_prob": 0.9597461223602296,
+          "label": 0
+        },
+        {
+          "record_id": "3967075_0019::event_10",
+          "fp_count": 1,
+          "max_prob": 0.9580459594726562,
+          "mean_prob": 0.9580459594726562,
+          "label": 0
+        },
+        {
+          "record_id": "3967075_0018::event_49",
+          "fp_count": 1,
+          "max_prob": 0.9574170112609864,
+          "mean_prob": 0.9574170112609864,
+          "label": 0
+        },
+        {
+          "record_id": "3181450_0008::event_5",
+          "fp_count": 1,
+          "max_prob": 0.9573565125465392,
+          "mean_prob": 0.9573565125465392,
+          "label": 0
+        },
+        {
+          "record_id": "3181450_0008::event_2",
+          "fp_count": 1,
+          "max_prob": 0.9569910168647766,
+          "mean_prob": 0.9569910168647766,
+          "label": 0
+        },
+        {
+          "record_id": "3181450_0008::event_4",
+          "fp_count": 1,
+          "max_prob": 0.9563570618629456,
+          "mean_prob": 0.9563570618629456,
+          "label": 0
+        },
+        {
+          "record_id": "3967075_0018::event_60",
+          "fp_count": 1,
+          "max_prob": 0.9563342332839966,
+          "mean_prob": 0.9563342332839966,
+          "label": 0
+        },
+        {
+          "record_id": "3181450_0008::event_3",
+          "fp_count": 1,
+          "max_prob": 0.9560515880584716,
+          "mean_prob": 0.9560515880584716,
+          "label": 0
+        },
+        {
+          "record_id": "3967075_0018::event_61",
+          "fp_count": 1,
+          "max_prob": 0.95311039686203,
+          "mean_prob": 0.95311039686203,
+          "label": 0
+        }
+      ],
+      "top_fp_subjects": [],
+      "false_positive_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/mimic_ext_p00_p01_p02_ppg_1to2_20260423_171429/record_test_false_positives.csv",
+      "by_group_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/mimic_ext_p00_p01_p02_ppg_1to2_20260423_171429/record_test_false_positives_by_group.csv",
+      "by_subject_csv": null,
+      "by_quality_bin_csv": null
+    }
+  }
+}

@@ -37,9 +37,20 @@ class QualityGateConfig:
     total_band_hz: tuple[float, float] = (0.1, 8.0)
     min_heart_band_energy_ratio: float = 0.45
     max_abs_skewness: float = 2.0
+    max_kurtosis: Optional[float] = 12.0
     min_template_correlation: float = 0.45
     max_acc_variance: Optional[float] = None
     min_peak_count: int = 8
+    max_peak_count: Optional[int] = None
+    min_hr_bpm: Optional[float] = 35.0
+    max_hr_bpm: Optional[float] = 220.0
+    max_short_ibi_fraction: float = 0.20
+    max_long_ibi_fraction: float = 0.20
+    max_ibi_outlier_fraction: float = 0.35
+    max_zero_crossing_rate: float = 0.20
+    min_snr_sqi: Optional[float] = 1.20
+    min_detector_agreement: Optional[float] = 0.55
+    min_perfusion_sqi: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -113,11 +124,22 @@ def default_ppg_config(sample_rate_hz: float = 125.0) -> SignalPipelineConfig:
         quality=QualityGateConfig(
             heart_band_hz=(0.5, 3.5),
             total_band_hz=(0.1, 8.0),
-            min_heart_band_energy_ratio=0.45,
+            min_heart_band_energy_ratio=0.55,
             max_abs_skewness=2.0,
-            min_template_correlation=0.45,
+            max_kurtosis=12.0,
+            min_template_correlation=0.55,
             max_acc_variance=None,
-            min_peak_count=8,
+            min_peak_count=15,
+            max_peak_count=125,
+            min_hr_bpm=35.0,
+            max_hr_bpm=220.0,
+            max_short_ibi_fraction=0.20,
+            max_long_ibi_fraction=0.20,
+            max_ibi_outlier_fraction=0.35,
+            max_zero_crossing_rate=0.20,
+            min_snr_sqi=1.20,
+            min_detector_agreement=0.55,
+            min_perfusion_sqi=None,
         ),
         peaks=PeakDetectionConfig(
             min_hr_bpm=35.0,
@@ -142,9 +164,20 @@ def default_ecg_config(sample_rate_hz: float = 125.0) -> SignalPipelineConfig:
             total_band_hz=(0.1, 40.0),
             min_heart_band_energy_ratio=0.25,
             max_abs_skewness=4.5,
+            max_kurtosis=None,
             min_template_correlation=0.35,
             max_acc_variance=None,
             min_peak_count=8,
+            max_peak_count=None,
+            min_hr_bpm=35.0,
+            max_hr_bpm=240.0,
+            max_short_ibi_fraction=0.25,
+            max_long_ibi_fraction=0.25,
+            max_ibi_outlier_fraction=0.45,
+            max_zero_crossing_rate=0.35,
+            min_snr_sqi=0.20,
+            min_detector_agreement=None,
+            min_perfusion_sqi=None,
         ),
         peaks=PeakDetectionConfig(
             min_hr_bpm=35.0,
@@ -292,6 +325,23 @@ def refine_peaks(candidate_peaks: np.ndarray, signal_values: np.ndarray, minimum
     return np.asarray(kept, dtype=int)
 
 
+def detect_ppg_peaks_prominence(ppg_signal: np.ndarray, config: SignalPipelineConfig) -> np.ndarray:
+    smooth_window = odd_window_length(int(round(config.sample_rate_hz * 0.10)))
+    smoothed = sp_signal.savgol_filter(ppg_signal, smooth_window, polyorder=3, mode="interp")
+    prominence_threshold = max(
+        config.peaks.min_absolute_prominence,
+        config.peaks.prominence_scale * 0.75 * robust_scale(smoothed),
+    )
+    amplitude_threshold = float(np.median(smoothed) + 0.05 * robust_scale(smoothed))
+    peaks, _ = sp_signal.find_peaks(
+        smoothed,
+        distance=minimum_peak_distance_samples(config),
+        prominence=prominence_threshold,
+        height=amplitude_threshold,
+    )
+    return peaks.astype(int)
+
+
 def detect_ppg_peaks_dmm(ppg_signal: np.ndarray, config: SignalPipelineConfig) -> np.ndarray:
     smooth_window = odd_window_length(int(round(config.sample_rate_hz * 0.12)))
     smoothed = sp_signal.savgol_filter(ppg_signal, smooth_window, polyorder=3, mode="interp")
@@ -334,6 +384,33 @@ def detect_ppg_peaks_dmm(ppg_signal: np.ndarray, config: SignalPipelineConfig) -
         height=amplitude_threshold,
     )
     return fallback.astype(int)
+
+
+def peak_detector_agreement(
+    reference_peaks: np.ndarray,
+    comparison_peaks: np.ndarray,
+    sample_rate_hz: float,
+    tolerance_seconds: float = 0.12,
+) -> float:
+    if reference_peaks.size == 0 and comparison_peaks.size == 0:
+        return 1.0
+    if reference_peaks.size == 0 or comparison_peaks.size == 0:
+        return 0.0
+
+    tolerance_samples = max(1, int(round(tolerance_seconds * sample_rate_hz)))
+    comparison_used = np.zeros(comparison_peaks.size, dtype=bool)
+    matches = 0
+    for peak in reference_peaks:
+        distances = np.abs(comparison_peaks - int(peak))
+        candidate_order = np.argsort(distances)
+        for candidate_idx in candidate_order:
+            if distances[candidate_idx] > tolerance_samples:
+                break
+            if not comparison_used[candidate_idx]:
+                comparison_used[candidate_idx] = True
+                matches += 1
+                break
+    return float(matches / max(reference_peaks.size, comparison_peaks.size, 1))
 
 
 def detect_ecg_r_peaks(ecg_signal: np.ndarray, config: SignalPipelineConfig) -> np.ndarray:
@@ -400,6 +477,60 @@ def estimate_heart_band_energy_ratio(signal_values: np.ndarray, config: SignalPi
     band_energy = float(integrate(psd[band_mask], frequencies[band_mask])) if np.any(band_mask) else 0.0
     total_energy = float(integrate(psd[total_mask], frequencies[total_mask])) if np.any(total_mask) else 0.0
     return band_energy / (total_energy + EPS)
+
+
+def estimate_relative_power_sqi(
+    signal_values: np.ndarray,
+    sample_rate_hz: float,
+    numerator_band_hz: tuple[float, float] = (1.0, 2.25),
+    denominator_band_hz: tuple[float, float] = (0.0, 8.0),
+) -> float:
+    centered = np.asarray(signal_values, dtype=float) - float(np.mean(signal_values))
+    frequencies, psd = sp_signal.welch(centered, fs=sample_rate_hz, nperseg=min(centered.size, 512))
+    numerator_mask = (frequencies >= numerator_band_hz[0]) & (frequencies <= numerator_band_hz[1])
+    denominator_mask = (frequencies >= denominator_band_hz[0]) & (frequencies <= denominator_band_hz[1])
+    integrate = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+    numerator = float(integrate(psd[numerator_mask], frequencies[numerator_mask])) if np.any(numerator_mask) else 0.0
+    denominator = float(integrate(psd[denominator_mask], frequencies[denominator_mask])) if np.any(denominator_mask) else 0.0
+    return numerator / (denominator + EPS)
+
+
+def perfusion_sqi(raw_signal: np.ndarray, filtered_signal: np.ndarray) -> float:
+    raw_values = np.asarray(raw_signal, dtype=float)
+    filtered_values = np.asarray(filtered_signal, dtype=float)
+    baseline = abs(float(np.mean(raw_values)))
+    if baseline < EPS:
+        return float("nan")
+    return float((np.nanmax(filtered_values) - np.nanmin(filtered_values)) / baseline * 100.0)
+
+
+def zero_crossing_rate(signal_values: np.ndarray) -> float:
+    values = np.asarray(signal_values, dtype=float)
+    if values.size < 2:
+        return 0.0
+    signs = np.signbit(values)
+    return float(np.mean(signs[1:] != signs[:-1]))
+
+
+def snr_sqi(signal_values: np.ndarray, config: SignalPipelineConfig) -> float:
+    frequencies, psd = sp_signal.welch(signal_values, fs=config.sample_rate_hz, nperseg=min(signal_values.size, 512))
+    signal_mask = (frequencies >= config.quality.heart_band_hz[0]) & (frequencies <= config.quality.heart_band_hz[1])
+    noise_mask = (frequencies >= config.quality.total_band_hz[0]) & (frequencies <= config.quality.total_band_hz[1]) & ~signal_mask
+    integrate = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
+    signal_power = float(integrate(psd[signal_mask], frequencies[signal_mask])) if np.any(signal_mask) else 0.0
+    noise_power = float(integrate(psd[noise_mask], frequencies[noise_mask])) if np.any(noise_mask) else 0.0
+    return signal_power / (noise_power + EPS)
+
+
+def entropy_sqi(signal_values: np.ndarray) -> float:
+    values = np.asarray(signal_values, dtype=float)
+    power = values ** 2
+    total_power = float(np.sum(power))
+    if total_power < EPS:
+        return 0.0
+    probabilities = power / total_power
+    entropy = -np.sum(probabilities * np.log(probabilities + EPS))
+    return float(entropy / np.log(probabilities.size))
 
 
 def estimate_template_correlation(signal_values: np.ndarray, peaks: np.ndarray, sample_rate_hz: float) -> float:
@@ -511,28 +642,94 @@ def extract_interval_features(ibi_seconds: np.ndarray) -> dict[str, float]:
 
 def evaluate_segment_quality(
     signal_values: np.ndarray,
+    raw_signal_values: np.ndarray,
+    filtered_signal_values: np.ndarray,
     peaks: np.ndarray,
     acc_segment: Optional[np.ndarray],
     config: SignalPipelineConfig,
 ) -> dict[str, Any]:
     energy_ratio = estimate_heart_band_energy_ratio(signal_values, config)
+    relative_power = estimate_relative_power_sqi(signal_values, config.sample_rate_hz)
+    perfusion = perfusion_sqi(raw_signal_values, filtered_signal_values)
     skewness = float(stats.skew(signal_values, bias=False))
     if not np.isfinite(skewness):
         skewness = 0.0
+    kurtosis_value = float(stats.kurtosis(signal_values, fisher=False, bias=False))
+    if not np.isfinite(kurtosis_value):
+        kurtosis_value = 0.0
+    entropy_value = entropy_sqi(signal_values)
+    zcr = zero_crossing_rate(signal_values)
+    snr_value = snr_sqi(signal_values, config)
     template_corr = estimate_template_correlation(signal_values, peaks, config.sample_rate_hz)
     acc_variance = float(np.var(np.linalg.norm(acc_segment, axis=1))) if acc_segment is not None else float("nan")
     ibi_seconds = interbeat_intervals_seconds(peaks, config.sample_rate_hz)
     estimated_hr = float(60.0 / np.median(ibi_seconds)) if ibi_seconds.size > 0 else float("nan")
+    alternate_peaks = (
+        detect_ppg_peaks_prominence(signal_values, config)
+        if config.signal_name.lower() == "ppg"
+        else np.empty(0, dtype=int)
+    )
+    detector_agreement = (
+        peak_detector_agreement(peaks, alternate_peaks, config.sample_rate_hz)
+        if config.signal_name.lower() == "ppg"
+        else float("nan")
+    )
+
+    short_ibi_fraction = 0.0
+    long_ibi_fraction = 0.0
+    ibi_outlier_fraction = 0.0
+    if ibi_seconds.size > 0:
+        if config.quality.max_hr_bpm is not None:
+            min_ibi_seconds = 60.0 / max(config.quality.max_hr_bpm, EPS)
+            short_ibi_fraction = float(np.mean(ibi_seconds < min_ibi_seconds))
+        if config.quality.min_hr_bpm is not None:
+            max_ibi_seconds = 60.0 / max(config.quality.min_hr_bpm, EPS)
+            long_ibi_fraction = float(np.mean(ibi_seconds > max_ibi_seconds))
+        median_ibi = float(np.median(ibi_seconds))
+        ibi_mad = robust_scale(ibi_seconds)
+        if ibi_mad > EPS:
+            robust_z = np.abs(ibi_seconds - median_ibi) / ibi_mad
+            ibi_outlier_fraction = float(np.mean(robust_z > 3.5))
 
     reasons = []
     if peaks.size < config.quality.min_peak_count:
         reasons.append("too_few_peaks")
+    if config.quality.max_peak_count is not None and peaks.size > config.quality.max_peak_count:
+        reasons.append("too_many_peaks")
     if energy_ratio < config.quality.min_heart_band_energy_ratio:
         reasons.append("low_heart_band_energy")
     if np.isfinite(skewness) and abs(skewness) > config.quality.max_abs_skewness:
         reasons.append("skewness_out_of_range")
-    if np.isfinite(template_corr) and template_corr < config.quality.min_template_correlation:
+    if config.quality.max_kurtosis is not None and np.isfinite(kurtosis_value) and kurtosis_value > config.quality.max_kurtosis:
+        reasons.append("kurtosis_out_of_range")
+    if not np.isfinite(template_corr) or template_corr < config.quality.min_template_correlation:
         reasons.append("low_template_correlation")
+    if config.quality.min_hr_bpm is not None and np.isfinite(estimated_hr) and estimated_hr < config.quality.min_hr_bpm:
+        reasons.append("heart_rate_too_low")
+    if config.quality.max_hr_bpm is not None and np.isfinite(estimated_hr) and estimated_hr > config.quality.max_hr_bpm:
+        reasons.append("heart_rate_too_high")
+    if short_ibi_fraction > config.quality.max_short_ibi_fraction:
+        reasons.append("too_many_short_ibi")
+    if long_ibi_fraction > config.quality.max_long_ibi_fraction:
+        reasons.append("too_many_long_ibi")
+    if ibi_outlier_fraction > config.quality.max_ibi_outlier_fraction:
+        reasons.append("too_many_ibi_outliers")
+    if zcr > config.quality.max_zero_crossing_rate:
+        reasons.append("high_zero_crossing_rate")
+    if config.quality.min_snr_sqi is not None and snr_value < config.quality.min_snr_sqi:
+        reasons.append("low_snr_sqi")
+    if (
+        config.quality.min_detector_agreement is not None
+        and np.isfinite(detector_agreement)
+        and detector_agreement < config.quality.min_detector_agreement
+    ):
+        reasons.append("low_detector_agreement")
+    if (
+        config.quality.min_perfusion_sqi is not None
+        and np.isfinite(perfusion)
+        and perfusion < config.quality.min_perfusion_sqi
+    ):
+        reasons.append("low_perfusion_sqi")
     if (
         acc_segment is not None
         and config.quality.max_acc_variance is not None
@@ -540,11 +737,35 @@ def evaluate_segment_quality(
     ):
         reasons.append("high_acc_variance")
 
+    def min_score(value: float, minimum: float) -> float:
+        if not np.isfinite(value):
+            return 0.0
+        return float(np.clip(value / max(minimum, EPS), 0.0, 1.0))
+
+    def max_score(value: float, maximum: float) -> float:
+        if not np.isfinite(value):
+            return 0.0
+        return float(np.clip(1.0 - (value / max(maximum, EPS)), 0.0, 1.0))
+
     normalized_scores = [
-        float(np.clip(energy_ratio / max(config.quality.min_heart_band_energy_ratio, EPS), 0.0, 1.0)),
-        float(np.clip(1.0 - (abs(skewness) / max(config.quality.max_abs_skewness, EPS)), 0.0, 1.0)),
-        0.0 if not np.isfinite(template_corr) else float(np.clip(template_corr / max(config.quality.min_template_correlation, EPS), 0.0, 1.0)),
+        min_score(energy_ratio, config.quality.min_heart_band_energy_ratio),
+        float(np.clip(relative_power / 0.35, 0.0, 1.0)) if np.isfinite(relative_power) else 0.0,
+        max_score(abs(skewness), config.quality.max_abs_skewness),
+        0.0 if not np.isfinite(template_corr) else min_score(template_corr, config.quality.min_template_correlation),
+        max_score(zcr, config.quality.max_zero_crossing_rate),
+        max_score(short_ibi_fraction, config.quality.max_short_ibi_fraction),
+        max_score(long_ibi_fraction, config.quality.max_long_ibi_fraction),
+        max_score(ibi_outlier_fraction, config.quality.max_ibi_outlier_fraction),
+        float(np.clip(entropy_value, 0.0, 1.0)) if np.isfinite(entropy_value) else 0.0,
     ]
+    if config.quality.min_snr_sqi is not None:
+        normalized_scores.append(min_score(snr_value, config.quality.min_snr_sqi))
+    if config.quality.max_kurtosis is not None:
+        normalized_scores.append(max_score(kurtosis_value, config.quality.max_kurtosis))
+    if config.quality.min_detector_agreement is not None and np.isfinite(detector_agreement):
+        normalized_scores.append(min_score(detector_agreement, config.quality.min_detector_agreement))
+    if config.quality.min_perfusion_sqi is not None and np.isfinite(perfusion):
+        normalized_scores.append(min_score(perfusion, config.quality.min_perfusion_sqi))
     if config.quality.max_acc_variance is not None and np.isfinite(acc_variance):
         normalized_scores.append(float(np.clip(1.0 - (acc_variance / max(config.quality.max_acc_variance, EPS)), 0.0, 1.0)))
 
@@ -552,10 +773,20 @@ def evaluate_segment_quality(
     return {
         "peak_count": int(peaks.size),
         "heart_band_energy_ratio": float(energy_ratio),
+        "relative_power_sqi": float(relative_power),
+        "perfusion_sqi": float(perfusion) if np.isfinite(perfusion) else float("nan"),
         "signal_skewness": float(skewness),
+        "signal_kurtosis": float(kurtosis_value),
+        "entropy_sqi": float(entropy_value),
+        "zero_crossing_rate": float(zcr),
+        "snr_sqi": float(snr_value),
         "template_correlation": float(template_corr) if np.isfinite(template_corr) else float("nan"),
+        "detector_agreement": float(detector_agreement) if np.isfinite(detector_agreement) else float("nan"),
         "acc_variance": acc_variance,
         "estimated_hr_bpm": estimated_hr,
+        "short_ibi_fraction": float(short_ibi_fraction),
+        "long_ibi_fraction": float(long_ibi_fraction),
+        "ibi_outlier_fraction": float(ibi_outlier_fraction),
         "quality_score": float(np.mean(normalized_scores)),
         "accepted": bool(accepted),
         "rejection_reason": "" if accepted else ";".join(reasons),
@@ -580,7 +811,14 @@ def process_segment(
     peaks = detect_beats(normalized_signal, config)
     ibi_seconds = interbeat_intervals_seconds(peaks, config.sample_rate_hz)
 
-    quality_metrics = evaluate_segment_quality(normalized_signal, peaks, acc_segment, config)
+    quality_metrics = evaluate_segment_quality(
+        signal_values=normalized_signal,
+        raw_signal_values=signal_values,
+        filtered_signal_values=filtered_signal,
+        peaks=peaks,
+        acc_segment=acc_segment,
+        config=config,
+    )
     feature_metrics = extract_interval_features(ibi_seconds)
     feature_metrics["signal_spectral_entropy"] = signal_spectral_entropy(normalized_signal, config.sample_rate_hz)
 

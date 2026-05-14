@@ -4,488 +4,83 @@ import argparse
 import copy
 import json
 import math
-import random
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn.functional as F
-from sklearn.metrics import average_precision_score, confusion_matrix, f1_score, roc_auc_score
 from torch import nn
-from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
+from af_pipeline.data import PPGAugment, PPGSegmentDataset, load_and_concat_signal_datasets
+from af_pipeline.features import FEATURE_COLUMNS, SQI_CONDITION_COLUMNS, fill_and_scale_features
+from af_pipeline.losses import AsymmetricLoss, QualityAwareFocalLoss, mixup_batch
+from af_pipeline.runtime import (
+    choose_amp,
+    compute_metrics,
+    find_best_threshold,
+    format_duration,
+    get_device,
+    load_init_checkpoint,
+    log_stage,
+    safe_probability_metric,
+    save_json,
+    set_seed,
+    should_report_progress,
+)
+from af_pipeline.splits import (
+    _parse_fold_list,
+    create_metadata_fold_split_masks,
+    create_random_window_split_masks,
+    create_split_masks,
+    infer_record_grouping,
+    stratified_record_split,
+    validate_split_masks,
+)
+from ppg_beatformer_model import QualityAwareBeatFormer
 from ppg_hybrid_model import RhythmMorphologyFusionNet
 
-FEATURE_COLUMNS = [
-    "peak_count",
-    "heart_band_energy_ratio",
-    "signal_skewness",
-    "template_correlation",
-    "estimated_hr_bpm",
+
+PREDICTION_METADATA_COLUMNS = [
+    "record_id",
+    "event_id",
+    "subject_id",
+    "segment_index",
+    "start_time_sec",
+    "end_time_sec",
     "quality_score",
-    "ibi_count",
-    "mean_ibi_ms",
-    "median_ibi_ms",
-    "sdnn_ms",
-    "rmssd_ms",
-    "pnn50",
+    "template_correlation",
+    "heart_band_energy_ratio",
+    "estimated_hr_bpm",
     "mean_hr_bpm",
     "std_hr_bpm",
-    "cv_ibi",
     "sample_entropy",
-    "signal_spectral_entropy",
+    "signal_file_name",
+    "patient",
+    "folder_path",
+    "strat_fold",
 ]
 
 
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def get_device() -> torch.device:
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-
-
-def choose_amp(device: torch.device, disable_amp: bool = False) -> tuple[bool, str]:
-    if disable_amp:
-        return False, device.type if device.type in {"cuda", "cpu", "mps"} else "cpu"
-    if device.type == "cuda":
-        return True, "cuda"
-    return False, "cpu"
-
-
-def format_duration(seconds: float) -> str:
-    total_seconds = max(int(round(seconds)), 0)
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    if hours:
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    return f"{minutes:02d}:{secs:02d}"
-
-
-def load_init_checkpoint(model: nn.Module, checkpoint_path: Path) -> dict[str, Any]:
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    state_dict = checkpoint.get("student_model_state_dict")
-    if state_dict is None:
-        state_dict = checkpoint.get("model_state_dict")
-    if state_dict is None:
-        raise ValueError(
-            f"Initialization checkpoint {checkpoint_path} does not contain student_model_state_dict or model_state_dict."
-        )
-    load_result = model.load_state_dict(state_dict, strict=False)
-    return {
-        "checkpoint_path": str(checkpoint_path),
-        "missing_keys": list(load_result.missing_keys),
-        "unexpected_keys": list(load_result.unexpected_keys),
-    }
-
-
-def should_report_progress(current_step: int, total_steps: int, every_steps: int) -> bool:
-    if current_step <= 1 or current_step >= total_steps:
-        return True
-    if every_steps > 0 and current_step % every_steps == 0:
-        return True
-    completed_percent = int((current_step * 100) / max(total_steps, 1))
-    previous_percent = int(((current_step - 1) * 100) / max(total_steps, 1))
-    return completed_percent != previous_percent and completed_percent % 10 == 0
-
-
-@dataclass
-class NormalizationStats:
-    feature_medians: np.ndarray
-    feature_means: np.ndarray
-    feature_stds: np.ndarray
-
-
-class PPGAugment:
-    def __init__(self, signal_length: int):
-        self.signal_length = signal_length
-
-    def __call__(self, signal_values: np.ndarray) -> np.ndarray:
-        x = signal_values.astype(np.float32).copy()
-
-        if np.random.rand() < 0.9:
-            x *= np.random.uniform(0.90, 1.10)
-
-        if np.random.rand() < 0.8:
-            x += np.random.normal(0.0, np.random.uniform(0.005, 0.03), size=x.shape).astype(np.float32)
-
-        if np.random.rand() < 0.5:
-            shift = np.random.randint(-32, 33)
-            x = np.roll(x, shift)
-
-        if np.random.rand() < 0.4:
-            t = np.linspace(0.0, 1.0, x.size, dtype=np.float32)
-            drift = np.sin(2.0 * np.pi * np.random.uniform(0.2, 1.2) * t + np.random.uniform(0, 2 * np.pi))
-            x += drift.astype(np.float32) * np.random.uniform(0.01, 0.05)
-
-        if np.random.rand() < 0.3:
-            mask_len = np.random.randint(self.signal_length // 80, self.signal_length // 20)
-            start = np.random.randint(0, self.signal_length - mask_len)
-            x[start : start + mask_len] = float(np.mean(x))
-
-        if np.random.rand() < 0.35:
-            stretch = np.random.uniform(0.96, 1.04)
-            idx = np.linspace(0, self.signal_length - 1, int(self.signal_length * stretch), dtype=np.float32)
-            warped = np.interp(idx, np.arange(self.signal_length, dtype=np.float32), x)
-            x = np.interp(
-                np.linspace(0, warped.size - 1, self.signal_length, dtype=np.float32),
-                np.arange(warped.size, dtype=np.float32),
-                warped,
-            ).astype(np.float32)
-
-        return x
-
-
-class PPGSegmentDataset(Dataset):
-    def __init__(
-        self,
-        signals: np.ndarray,
-        features: np.ndarray,
-        labels: np.ndarray,
-        records: np.ndarray,
-        quality_scores: np.ndarray,
-        augment: PPGAugment | None = None,
-    ):
-        self.signals = signals.astype(np.float32)
-        self.features = features.astype(np.float32)
-        self.labels = labels.astype(np.float32)
-        self.records = records
-        self.quality_scores = quality_scores.astype(np.float32)
-        self.augment = augment
-
-    def __len__(self) -> int:
-        return self.signals.shape[0]
-
-    def __getitem__(self, index: int) -> dict[str, Any]:
-        signal_values = self.signals[index]
-        if self.augment is not None:
-            signal_values = self.augment(signal_values)
-
-        return {
-            "waveform": torch.from_numpy(signal_values),
-            "features": torch.from_numpy(self.features[index]),
-            "label": torch.tensor(self.labels[index], dtype=torch.float32),
-            "quality_score": torch.tensor(self.quality_scores[index], dtype=torch.float32),
-            "record_id": self.records[index],
-        }
-
-
-def stratified_record_split(
-    summary_df: pd.DataFrame,
-    val_record_count: int = 5,
-    test_record_count: int = 5,
-    seed: int = 42,
-) -> dict[str, list[str]]:
-    records = (
-        summary_df.groupby("record_id", as_index=False)
-        .agg(label=("label", "max"))
-        .reset_index(drop=True)
-    )
-    pos_records = records.loc[records["label"] == 1, "record_id"].tolist()
-    neg_records = records.loc[records["label"] == 0, "record_id"].tolist()
-
-    rng = random.Random(seed)
-    rng.shuffle(pos_records)
-    rng.shuffle(neg_records)
-
-    total_records = len(records)
-    if total_records < 3:
-        raise ValueError(
-            "Patient-wise split requires at least 3 unique record_id values. "
-            "Use --split-mode random_windows for single-record smoke tests."
-        )
-
-    if not pos_records or not neg_records:
-        shuffled_records = records["record_id"].tolist()
-        rng.shuffle(shuffled_records)
-        test_records = shuffled_records[:test_record_count]
-        val_records = shuffled_records[test_record_count : test_record_count + val_record_count]
-        train_records = shuffled_records[test_record_count + val_record_count :]
-        return {
-            "train": sorted(train_records),
-            "val": sorted(val_records),
-            "test": sorted(test_records),
-        }
-
-    test_pos = round(test_record_count * len(pos_records) / total_records)
-    test_neg = test_record_count - test_pos
-    val_pos = round(val_record_count * len(pos_records) / total_records)
-    val_neg = val_record_count - val_pos
-
-    test_records = pos_records[:test_pos] + neg_records[:test_neg]
-    val_records = pos_records[test_pos : test_pos + val_pos] + neg_records[test_neg : test_neg + val_neg]
-    train_records = pos_records[test_pos + val_pos :] + neg_records[test_neg + val_neg :]
-
-    return {
-        "train": sorted(train_records),
-        "val": sorted(val_records),
-        "test": sorted(test_records),
-    }
-
-
-def fill_and_scale_features(summary_df: pd.DataFrame, split_masks: dict[str, np.ndarray]) -> tuple[pd.DataFrame, NormalizationStats]:
-    features = summary_df[FEATURE_COLUMNS].copy()
-    train_features = features.loc[split_masks["train"]]
-
-    medians = train_features.median(axis=0).to_numpy(dtype=np.float32)
-    features = features.fillna(dict(zip(FEATURE_COLUMNS, medians)))
-
-    train_filled = features.loc[split_masks["train"]]
-    means = train_filled.mean(axis=0).to_numpy(dtype=np.float32)
-    stds = train_filled.std(axis=0).replace(0.0, 1.0).to_numpy(dtype=np.float32)
-    features = (features - means) / stds
-
-    scaled_df = summary_df.copy()
-    scaled_df[FEATURE_COLUMNS] = features
-    return scaled_df, NormalizationStats(feature_medians=medians, feature_means=means, feature_stds=stds)
-
-
-def create_split_masks(summary_df: pd.DataFrame, split_records: dict[str, list[str]]) -> dict[str, np.ndarray]:
-    return {
-        split_name: summary_df["record_id"].isin(records).to_numpy()
-        for split_name, records in split_records.items()
-    }
-
-
-def create_random_window_split_masks(
-    summary_df: pd.DataFrame,
-    val_fraction: float = 0.1,
-    test_fraction: float = 0.1,
-    seed: int = 42,
-) -> dict[str, np.ndarray]:
-    if not 0.0 < val_fraction < 1.0:
-        raise ValueError("--val-fraction must be between 0 and 1.")
-    if not 0.0 < test_fraction < 1.0:
-        raise ValueError("--test-fraction must be between 0 and 1.")
-    if val_fraction + test_fraction >= 1.0:
-        raise ValueError("--val-fraction + --test-fraction must be smaller than 1.")
-
-    labels = summary_df["label"].to_numpy(dtype=np.int64)
-    indices = np.arange(labels.shape[0])
-    rng = np.random.default_rng(seed)
-
-    train_mask = np.zeros(labels.shape[0], dtype=bool)
-    val_mask = np.zeros(labels.shape[0], dtype=bool)
-    test_mask = np.zeros(labels.shape[0], dtype=bool)
-
-    for class_value in np.unique(labels):
-        class_indices = indices[labels == class_value]
-        rng.shuffle(class_indices)
-        n_items = class_indices.shape[0]
-        n_test = max(1, int(round(n_items * test_fraction)))
-        n_val = max(1, int(round(n_items * val_fraction)))
-        if n_test + n_val >= n_items:
-            n_test = max(1, n_items // 5)
-            n_val = max(1, n_items // 5)
-        n_train = n_items - n_test - n_val
-        if n_train <= 0:
-            raise ValueError(
-                "Not enough windows to create train/val/test splits for all classes. "
-                "Reduce --val-fraction/--test-fraction or add more data."
-            )
-
-        test_idx = class_indices[:n_test]
-        val_idx = class_indices[n_test : n_test + n_val]
-        train_idx = class_indices[n_test + n_val :]
-
-        test_mask[test_idx] = True
-        val_mask[val_idx] = True
-        train_mask[train_idx] = True
-
-    return {
-        "train": train_mask,
-        "val": val_mask,
-        "test": test_mask,
-    }
-
-
-def _parse_fold_list(text: str) -> list[int]:
-    values = []
-    for part in text.split(","):
-        normalized = part.strip()
-        if not normalized:
-            continue
-        values.append(int(normalized))
-    if not values:
-        raise ValueError("Fold list must contain at least one integer.")
-    return values
-
-
-def create_metadata_fold_split_masks(
-    summary_df: pd.DataFrame,
-    train_folds: list[int],
-    val_folds: list[int],
-    test_folds: list[int],
-) -> tuple[dict[str, np.ndarray], dict[str, list[str]]]:
-    if "strat_fold" not in summary_df.columns:
-        raise ValueError("split_mode=metadata_folds requires a 'strat_fold' column in the summary CSV.")
-
-    fold_values = pd.to_numeric(summary_df["strat_fold"], errors="raise").astype(int)
-    split_masks = {
-        "train": fold_values.isin(train_folds).to_numpy(),
-        "val": fold_values.isin(val_folds).to_numpy(),
-        "test": fold_values.isin(test_folds).to_numpy(),
-    }
-    split_records = {
-        "train": [str(value) for value in train_folds],
-        "val": [str(value) for value in val_folds],
-        "test": [str(value) for value in test_folds],
-    }
-    return split_masks, split_records
-
-
-def validate_split_masks(summary_df: pd.DataFrame, split_masks: dict[str, np.ndarray]) -> None:
-    for split_name, mask in split_masks.items():
-        count = int(mask.sum())
-        if count == 0:
-            raise ValueError(f"Split '{split_name}' is empty.")
-        labels = summary_df.loc[mask, "label"].to_numpy(dtype=np.int64)
-        if np.unique(labels).size < 2:
-            raise ValueError(
-                f"Split '{split_name}' contains only one class. "
-                "Use a different split configuration or add more data."
-            )
-
-
-def supports_record_level_metrics(summary_df: pd.DataFrame) -> bool:
-    return bool(summary_df.groupby("record_id")["label"].nunique().max() <= 1)
-
-
-def infer_record_grouping(summary_df: pd.DataFrame) -> tuple[str | None, pd.Series | None]:
-    if supports_record_level_metrics(summary_df):
-        return "record_id", summary_df["record_id"].astype(str)
-
-    if {"record_id", "event_id"}.issubset(summary_df.columns):
-        event_uniqueness = summary_df.groupby(["record_id", "event_id"])["label"].nunique().max()
-        if bool(event_uniqueness <= 1):
-            event_values = pd.to_numeric(summary_df["event_id"], errors="coerce").astype("Int64").astype(str)
-            group_ids = summary_df["record_id"].astype(str) + "::event_" + event_values
-            return "record_id+event_id", group_ids
-
-    if "signal_file_name" in summary_df.columns:
-        signal_uniqueness = summary_df.groupby("signal_file_name")["label"].nunique().max()
-        if bool(signal_uniqueness <= 1):
-            return "signal_file_name", summary_df["signal_file_name"].astype(str)
-
-    return None, None
-
-
-def safe_probability_metric(metric_name: str, y_true: np.ndarray, y_prob: np.ndarray) -> float:
-    y_prob = np.nan_to_num(y_prob, nan=0.5, posinf=1.0, neginf=0.0)
-    if np.unique(y_true).size < 2:
-        return float("nan")
-    if metric_name == "auroc":
-        return float(roc_auc_score(y_true, y_prob))
-    if metric_name == "auprc":
-        return float(average_precision_score(y_true, y_prob))
-    raise ValueError(f"Unsupported metric: {metric_name}")
-
-
-def mixup_batch(
-    waveform: torch.Tensor,
-    features: torch.Tensor,
-    labels: torch.Tensor,
-    qualities: torch.Tensor,
-    alpha: float = 0.2,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    if alpha <= 0.0:
-        return waveform, features, labels, qualities
-
-    lam = np.random.beta(alpha, alpha)
-    permutation = torch.randperm(waveform.size(0), device=waveform.device)
-    mixed_waveform = lam * waveform + (1.0 - lam) * waveform[permutation]
-    mixed_features = lam * features + (1.0 - lam) * features[permutation]
-    mixed_labels = lam * labels + (1.0 - lam) * labels[permutation]
-    mixed_qualities = lam * qualities + (1.0 - lam) * qualities[permutation]
-    return mixed_waveform, mixed_features, mixed_labels, mixed_qualities
-
-
-class QualityAwareFocalLoss(nn.Module):
-    def __init__(self, pos_weight: float, gamma: float = 1.5, label_smoothing: float = 0.02):
-        super().__init__()
-        self.register_buffer("pos_weight", torch.tensor([pos_weight], dtype=torch.float32))
-        self.gamma = gamma
-        self.label_smoothing = label_smoothing
-
-    def forward(
-        self,
-        logits: torch.Tensor,
-        targets: torch.Tensor,
-        quality_scores: torch.Tensor,
-    ) -> torch.Tensor:
-        quality_scores = quality_scores.clamp(0.0, 1.0)
-        smooth_targets = targets * (1.0 - self.label_smoothing) + 0.5 * self.label_smoothing
-        bce = F.binary_cross_entropy_with_logits(
-            logits,
-            smooth_targets,
-            reduction="none",
-            pos_weight=self.pos_weight.to(logits.device),
-        )
-        pt = torch.exp(-bce)
-        focal = ((1.0 - pt) ** self.gamma) * bce
-        sample_weights = 0.6 + 0.4 * quality_scores
-        return (focal * sample_weights).mean()
-
-
-def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> dict[str, float]:
-    y_prob = np.nan_to_num(y_prob, nan=0.5, posinf=1.0, neginf=0.0)
-    y_pred = (y_prob >= threshold).astype(np.int64)
-    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-
-    sensitivity = tp / (tp + fn) if (tp + fn) else 0.0
-    specificity = tn / (tn + fp) if (tn + fp) else 0.0
-    precision = tp / (tp + fp) if (tp + fp) else 0.0
-    accuracy = (tp + tn) / max(tp + tn + fp + fn, 1)
-
-    return {
-        "accuracy": float(accuracy),
-        "sensitivity": float(sensitivity),
-        "specificity": float(specificity),
-        "precision": float(precision),
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "auroc": safe_probability_metric("auroc", y_true, y_prob),
-        "auprc": safe_probability_metric("auprc", y_true, y_prob),
-    }
-
-
-def find_best_threshold(
-    y_true: np.ndarray,
-    y_prob: np.ndarray,
-    objective: str = "balanced_accuracy",
-) -> float:
-    y_prob = np.nan_to_num(y_prob, nan=0.5, posinf=1.0, neginf=0.0)
-    quantile_grid = np.quantile(y_prob, np.linspace(0.0, 1.0, 501))
-    dense_grid = np.linspace(0.001, 0.999, 999)
-    candidate_thresholds = np.unique(np.clip(np.concatenate([dense_grid, quantile_grid]), 0.0, 1.0))
-    best_threshold = 0.5
-    best_score = -1.0
-    for threshold in candidate_thresholds:
-        y_pred = (y_prob >= threshold).astype(np.int64)
-        tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-        sensitivity = tp / (tp + fn) if (tp + fn) else 0.0
-        specificity = tn / (tn + fp) if (tn + fp) else 0.0
-        if objective == "f1":
-            score = float(f1_score(y_true, y_pred, zero_division=0))
-        elif objective == "balanced_accuracy":
-            score = sensitivity + specificity
-        else:
-            raise ValueError(f"Unsupported threshold objective: {objective}")
-        if score > best_score:
-            best_score = score
-            best_threshold = float(threshold)
-    return best_threshold
+def feature_indices(column_names: list[str], selected_columns: list[str]) -> list[int]:
+    missing_columns = [column for column in selected_columns if column not in column_names]
+    if missing_columns:
+        raise ValueError(f"Selected SQI condition columns are not in feature columns: {missing_columns}")
+    return [column_names.index(column) for column in selected_columns]
+
+
+def active_branches_for_variant(model_variant: str) -> tuple[str, ...]:
+    if model_variant == "full_fusion":
+        return ("time", "spectral", "feature")
+    if model_variant == "waveform_only":
+        return ("time",)
+    if model_variant == "spectral_only":
+        return ("spectral",)
+    if model_variant == "feature_only":
+        return ("feature",)
+    raise ValueError(f"Unknown model variant: {model_variant}")
 
 
 def evaluate_model(
@@ -551,6 +146,114 @@ def summarize_by_record(
         )
 
     return pd.DataFrame.from_records(records)
+
+
+def build_threshold_sweep(
+    labels: np.ndarray,
+    probs: np.ndarray,
+    thresholds: np.ndarray | None = None,
+) -> pd.DataFrame:
+    labels = np.asarray(labels, dtype=np.int64)
+    probs = np.nan_to_num(np.asarray(probs, dtype=np.float32), nan=0.5, posinf=1.0, neginf=0.0)
+    if thresholds is None:
+        thresholds = np.unique(
+            np.clip(
+                np.concatenate(
+                    [
+                        np.linspace(0.001, 0.999, 999),
+                        np.quantile(probs, np.linspace(0.0, 1.0, 501)),
+                    ]
+                ),
+                0.0,
+                1.0,
+            )
+        )
+
+    order = np.argsort(probs)
+    sorted_probs = probs[order]
+    sorted_labels = labels[order]
+    positive_prefix = np.concatenate([[0], np.cumsum(sorted_labels == 1)])
+    total_positive = int(positive_prefix[-1])
+    total_count = int(labels.size)
+
+    rows = []
+    for threshold in thresholds:
+        below_count = int(np.searchsorted(sorted_probs, threshold, side="left"))
+        fn = int(positive_prefix[below_count])
+        tp = total_positive - fn
+        tn = below_count - fn
+        fp = (total_count - below_count) - tp
+
+        sensitivity = tp / (tp + fn) if (tp + fn) else 0.0
+        specificity = tn / (tn + fp) if (tn + fp) else 0.0
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        accuracy = (tp + tn) / max(tp + tn + fp + fn, 1)
+        f1 = (2.0 * precision * sensitivity / (precision + sensitivity)) if (precision + sensitivity) else 0.0
+
+        rows.append(
+            {
+                "threshold": float(threshold),
+                "accuracy": float(accuracy),
+                "sensitivity": float(sensitivity),
+                "specificity": float(specificity),
+                "precision": float(precision),
+                "f1": float(f1),
+                "tn": tn,
+                "fp": fp,
+                "fn": fn,
+                "tp": tp,
+                "predicted_positive": int(total_count - below_count),
+                "predicted_negative": int(below_count),
+            }
+        )
+
+    return pd.DataFrame.from_records(rows)
+
+
+def best_threshold_row(sweep_df: pd.DataFrame, metric: str = "f1") -> dict[str, Any]:
+    if sweep_df.empty:
+        return {}
+    best_index = sweep_df[metric].idxmax()
+    row = sweep_df.loc[best_index].to_dict()
+    return {key: value.item() if hasattr(value, "item") else value for key, value in row.items()}
+
+
+def build_segment_prediction_frame(
+    analysis_summary_df: pd.DataFrame,
+    split_mask: np.ndarray,
+    grouped_record_ids: np.ndarray,
+    labels: np.ndarray,
+    probs: np.ndarray,
+    raw_quality_scores: np.ndarray,
+) -> pd.DataFrame:
+    available_columns = [column for column in PREDICTION_METADATA_COLUMNS if column in analysis_summary_df.columns]
+    frame = analysis_summary_df.loc[split_mask, available_columns].reset_index(drop=True).copy()
+    raw_record_ids = analysis_summary_df.loc[split_mask, "record_id"].astype(str).reset_index(drop=True)
+    frame["record_id"] = raw_record_ids
+    frame["group_id"] = np.asarray(grouped_record_ids, dtype=str)
+    frame["label"] = np.asarray(labels, dtype=np.int64)
+    frame["prob"] = np.asarray(probs, dtype=np.float32)
+    frame["quality_score_runtime"] = raw_quality_scores[split_mask].astype(np.float32)
+    frame["predicted_label_at_0_5"] = (frame["prob"] >= 0.5).astype(np.int64)
+    return frame
+
+
+def attach_group_metadata(record_frame: pd.DataFrame, segment_frame: pd.DataFrame) -> pd.DataFrame:
+    if record_frame.empty:
+        return record_frame
+
+    enriched = record_frame.copy()
+    enriched["group_id"] = enriched["record_id"].astype(str)
+
+    metadata_spec: dict[str, tuple[str, str]] = {"raw_record_id": ("record_id", "first")}
+    for column in ("subject_id", "event_id", "signal_file_name", "patient", "folder_path", "strat_fold"):
+        if column in segment_frame.columns:
+            metadata_spec[column] = (column, "first")
+    if "quality_score_runtime" in segment_frame.columns:
+        metadata_spec["segment_quality_mean"] = ("quality_score_runtime", "mean")
+
+    grouped_metadata = segment_frame.groupby("group_id", as_index=False).agg(**metadata_spec)
+    return enriched.merge(grouped_metadata, on="group_id", how="left")
 
 
 def run_training_epoch(
@@ -660,6 +363,7 @@ def prepare_dataloaders(
     split_masks: dict[str, np.ndarray],
     batch_size: int,
     balanced_sampler: bool,
+    sampler_positive_fraction: float,
     disable_train_augment: bool,
 ) -> tuple[dict[str, DataLoader], dict[str, np.ndarray]]:
     arrays = {}
@@ -690,9 +394,13 @@ def prepare_dataloaders(
         shuffle = split_name == "train"
         if split_name == "train" and balanced_sampler:
             class_counts = np.bincount(split_labels.astype(np.int64), minlength=2)
+            target_fractions = np.asarray(
+                [1.0 - sampler_positive_fraction, sampler_positive_fraction],
+                dtype=np.float32,
+            )
             class_weights = np.zeros(2, dtype=np.float32)
             for class_index, count in enumerate(class_counts):
-                class_weights[class_index] = 1.0 / max(int(count), 1)
+                class_weights[class_index] = target_fractions[class_index] / max(int(count), 1)
             sample_weights = class_weights[split_labels.astype(np.int64)]
             sampler = WeightedRandomSampler(
                 weights=torch.as_tensor(sample_weights, dtype=torch.double),
@@ -709,56 +417,6 @@ def prepare_dataloaders(
         )
 
     return loaders, arrays
-
-
-def save_json(payload: dict[str, Any], path: Path) -> None:
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-
-def log_stage(message: str) -> None:
-    print(message, flush=True)
-
-
-def load_and_concat_signal_datasets(
-    segments_paths: list[Path],
-    summary_paths: list[Path],
-) -> tuple[np.ndarray, pd.DataFrame]:
-    if len(segments_paths) != len(summary_paths):
-        raise ValueError("--segments-path and --summary-path must be provided the same number of times.")
-
-    signal_blocks = []
-    summary_blocks = []
-    expected_signal_length = None
-
-    for segments_path, summary_path in zip(segments_paths, summary_paths):
-        log_stage(f"[load] reading NPZ: {segments_path}")
-        segments_npz = np.load(segments_path)
-        signals = segments_npz["segments"].astype(np.float32)
-        log_stage(f"[load] NPZ ready: shape={signals.shape} dtype={signals.dtype}")
-        log_stage(f"[load] reading CSV: {summary_path}")
-        summary_df = pd.read_csv(summary_path)
-        log_stage(f"[load] CSV ready: rows={summary_df.shape[0]} cols={summary_df.shape[1]}")
-        if signals.shape[0] != summary_df.shape[0]:
-            raise ValueError(
-                f"Segments NPZ and summary CSV row counts do not match for {segments_path} and {summary_path}."
-            )
-        if expected_signal_length is None:
-            expected_signal_length = signals.shape[1]
-        elif signals.shape[1] != expected_signal_length:
-            raise ValueError(
-                "All input signal datasets must have the same segment length. "
-                f"Expected {expected_signal_length}, got {signals.shape[1]} from {segments_path}."
-            )
-        signal_blocks.append(signals)
-        summary_blocks.append(summary_df)
-
-    merged_signals = np.concatenate(signal_blocks, axis=0)
-    merged_summary = pd.concat(summary_blocks, ignore_index=True)
-    log_stage(
-        "[load] merged dataset ready: "
-        f"signals_shape={merged_signals.shape} summary_rows={merged_summary.shape[0]}"
-    )
-    return merged_signals, merged_summary
 
 
 def parse_args() -> argparse.Namespace:
@@ -830,6 +488,21 @@ def parse_args() -> argparse.Namespace:
         help="Use a class-balanced sampler for the training dataloader.",
     )
     parser.add_argument(
+        "--sampler-positive-fraction",
+        type=float,
+        default=0.5,
+        help=(
+            "Target AF fraction sampled by --balanced-sampler. "
+            "Use 0.5 for 1:1, 0.333333 for 1:2, or 0.25 for 1:3 AF:non-AF."
+        ),
+    )
+    parser.add_argument(
+        "--pos-weight-scale",
+        type=float,
+        default=1.0,
+        help="Multiplier applied to the computed BCE positive-class weight.",
+    )
+    parser.add_argument(
         "--disable-train-augment",
         action="store_true",
         help="Disable waveform augmentation in the training dataset.",
@@ -851,11 +524,48 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional pretrained checkpoint used to initialize the PPG hybrid model.",
     )
+    parser.add_argument(
+        "--fusion-mode",
+        choices=("standard", "sqi_conditioned"),
+        default="sqi_conditioned",
+        help=(
+            "Fusion gate variant. standard uses only branch embeddings; sqi_conditioned also feeds selected "
+            "SQI features into the gate controller."
+        ),
+    )
+    parser.add_argument(
+        "--model-architecture",
+        choices=("hybrid", "qa_beatformer"),
+        default="hybrid",
+        help="Top-level model architecture to train.",
+    )
+    parser.add_argument(
+        "--model-variant",
+        choices=("full_fusion", "waveform_only", "spectral_only", "feature_only"),
+        default="full_fusion",
+        help="Hybrid branch ablation variant to train. Ignored for --model-architecture qa_beatformer.",
+    )
+    parser.add_argument("--beatformer-max-beats", type=int, default=64)
+    parser.add_argument("--beatformer-beat-length", type=int, default=128)
+    parser.add_argument("--beatformer-d-model", type=int, default=128)
+    parser.add_argument("--beatformer-layers", type=int, default=2)
+    parser.add_argument("--beatformer-heads", type=int, default=4)
+    parser.add_argument("--beatformer-dropout", type=float, default=0.1)
+    parser.add_argument("--loss-type", choices=("quality_focal", "asymmetric"), default="quality_focal")
+    parser.add_argument("--asl-gamma-neg", type=float, default=4.0)
+    parser.add_argument("--asl-gamma-pos", type=float, default=1.0)
+    parser.add_argument("--asl-clip", type=float, default=0.05)
+    parser.add_argument("--asl-soft-f1-weight", type=float, default=0.0)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if not 0.0 < args.sampler_positive_fraction < 1.0:
+        raise ValueError("--sampler-positive-fraction must be between 0 and 1.")
+    if args.pos_weight_scale <= 0.0:
+        raise ValueError("--pos-weight-scale must be greater than 0.")
+
     set_seed(args.seed)
     device = get_device()
     amp_enabled, amp_device_type = choose_amp(device, disable_amp=args.disable_amp)
@@ -867,7 +577,7 @@ def main() -> None:
     log_stage(
         "[setup] starting training: "
         f"device={device.type} split_mode={args.split_mode} epochs={args.epochs} batch_size={args.batch_size} "
-        f"amp_enabled={amp_enabled}"
+        f"amp_enabled={amp_enabled} model_architecture={args.model_architecture} model_variant={args.model_variant}"
     )
     signals, summary_df = load_and_concat_signal_datasets(args.segments_path, args.summary_path)
     if not np.isfinite(signals).all():
@@ -919,6 +629,7 @@ def main() -> None:
         log_stage(f"[split] record-level aggregation enabled using grouping={record_grouping}")
     else:
         record_grouping = None
+    analysis_summary_df = summary_df.copy()
     log_stage("[features] filling missing values and scaling handcrafted features")
     summary_df, normalization_stats = fill_and_scale_features(summary_df, split_masks)
     feature_array = summary_df[FEATURE_COLUMNS].to_numpy(dtype=np.float32)
@@ -935,6 +646,7 @@ def main() -> None:
         split_masks,
         batch_size=args.batch_size,
         balanced_sampler=args.balanced_sampler,
+        sampler_positive_fraction=args.sampler_positive_fraction,
         disable_train_augment=args.disable_train_augment,
     )
     split_sizes = {split_name: int(mask.sum()) for split_name, mask in split_masks.items()}
@@ -953,20 +665,96 @@ def main() -> None:
 
     train_pos = float(label_arrays["train"].sum())
     train_neg = float(label_arrays["train"].shape[0] - train_pos)
-    pos_weight = train_neg / max(train_pos, 1.0)
+    effective_train_pos = train_pos
+    effective_train_neg = train_neg
+    pos_weight_source = "raw_train_distribution"
+    if args.balanced_sampler and train_pos > 0.0 and train_neg > 0.0:
+        effective_train_pos = label_arrays["train"].shape[0] * args.sampler_positive_fraction
+        effective_train_neg = label_arrays["train"].shape[0] * (1.0 - args.sampler_positive_fraction)
+        pos_weight_source = "balanced_sampler"
+    pos_weight = (effective_train_neg / max(effective_train_pos, 1.0)) * args.pos_weight_scale
     log_stage(
         "[model] dataset prepared: "
-        f"train_pos={int(train_pos)} train_neg={int(train_neg)} pos_weight={pos_weight:.4f}"
+        f"train_pos={int(train_pos)} train_neg={int(train_neg)} "
+        f"effective_train_pos={int(effective_train_pos)} effective_train_neg={int(effective_train_neg)} "
+        f"sampler_positive_fraction={args.sampler_positive_fraction:.4f} "
+        f"pos_weight={pos_weight:.4f} pos_weight_scale={args.pos_weight_scale:.4f} "
+        f"pos_weight_source={pos_weight_source}"
     )
 
-    model = RhythmMorphologyFusionNet(feature_dim=len(FEATURE_COLUMNS), signal_length=signals.shape[1]).to(device)
+    if args.model_architecture == "hybrid":
+        active_branches = active_branches_for_variant(args.model_variant)
+        uses_feature_branch = "feature" in active_branches
+        sqi_condition_columns = (
+            list(SQI_CONDITION_COLUMNS) if args.fusion_mode == "sqi_conditioned" and uses_feature_branch else []
+        )
+        sqi_condition_indices = feature_indices(FEATURE_COLUMNS, sqi_condition_columns)
+        model_config = {
+            "model_architecture": args.model_architecture,
+            "feature_dim": len(FEATURE_COLUMNS),
+            "signal_length": int(signals.shape[1]),
+            "model_variant": args.model_variant,
+            "active_branches": list(active_branches),
+            "fusion_mode": args.fusion_mode,
+            "sqi_condition_columns": sqi_condition_columns,
+            "sqi_condition_indices": sqi_condition_indices,
+        }
+        log_stage(
+            "[model] "
+            f"architecture={args.model_architecture} variant={args.model_variant} "
+            f"active_branches={','.join(active_branches)} fusion_mode={args.fusion_mode} "
+            f"sqi_condition_columns={','.join(sqi_condition_columns) if sqi_condition_columns else 'none'}"
+        )
+
+        model = RhythmMorphologyFusionNet(
+            feature_dim=len(FEATURE_COLUMNS),
+            signal_length=signals.shape[1],
+            sqi_condition_indices=sqi_condition_indices,
+            active_branches=active_branches,
+        ).to(device)
+    else:
+        model_config = {
+            "model_architecture": args.model_architecture,
+            "feature_dim": len(FEATURE_COLUMNS),
+            "signal_length": int(signals.shape[1]),
+            "max_beats": args.beatformer_max_beats,
+            "beat_length": args.beatformer_beat_length,
+            "d_model": args.beatformer_d_model,
+            "num_layers": args.beatformer_layers,
+            "num_heads": args.beatformer_heads,
+            "dropout": args.beatformer_dropout,
+        }
+        log_stage(
+            "[model] "
+            f"architecture={args.model_architecture} max_beats={args.beatformer_max_beats} "
+            f"beat_length={args.beatformer_beat_length} d_model={args.beatformer_d_model} "
+            f"layers={args.beatformer_layers} heads={args.beatformer_heads}"
+        )
+        model = QualityAwareBeatFormer(
+            feature_dim=len(FEATURE_COLUMNS),
+            signal_length=signals.shape[1],
+            max_beats=args.beatformer_max_beats,
+            beat_length=args.beatformer_beat_length,
+            d_model=args.beatformer_d_model,
+            num_layers=args.beatformer_layers,
+            num_heads=args.beatformer_heads,
+            dropout=args.beatformer_dropout,
+        ).to(device)
     initialization = None
     if args.init_checkpoint is not None:
         initialization = load_init_checkpoint(model, args.init_checkpoint)
         print("loaded init checkpoint:", json.dumps(initialization, indent=2), flush=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
-    loss_fn = QualityAwareFocalLoss(pos_weight=pos_weight)
+    if args.loss_type == "asymmetric":
+        loss_fn = AsymmetricLoss(
+            gamma_neg=args.asl_gamma_neg,
+            gamma_pos=args.asl_gamma_pos,
+            clip=args.asl_clip,
+            alpha_soft_f1=args.asl_soft_f1_weight,
+        )
+    else:
+        loss_fn = QualityAwareFocalLoss(pos_weight=pos_weight)
 
     best_state = None
     best_epoch = 0
@@ -1041,11 +829,19 @@ def main() -> None:
         message = (
             f"epoch={epoch:02d} "
             f"loss={train_loss:.4f} "
+            f"val_accuracy={val_metrics['accuracy']:.4f} "
+            f"val_precision={val_metrics['precision']:.4f} "
+            f"val_sensitivity={val_metrics['sensitivity']:.4f} "
+            f"val_specificity={val_metrics['specificity']:.4f} "
             f"val_auroc={val_metrics['auroc']:.4f} "
             f"val_f1={val_metrics['f1']:.4f}"
         )
         if record_level_enabled:
-            message += f" val_record_auroc={record_val_metrics['auroc']:.4f}"
+            message += (
+                f" val_record_accuracy={record_val_metrics['accuracy']:.4f}"
+                f" val_record_auroc={record_val_metrics['auroc']:.4f}"
+                f" val_record_f1={record_val_metrics['f1']:.4f}"
+            )
         elapsed = time.time() - start_time
         avg_epoch_seconds = elapsed / epoch
         eta_seconds = avg_epoch_seconds * max(args.epochs - epoch, 0)
@@ -1081,6 +877,7 @@ def main() -> None:
 
     record_val_metrics = None
     record_test_metrics = None
+    record_val = pd.DataFrame(columns=["record_id", "label", "prob", "segment_count", "quality_mean"])
     record_test = pd.DataFrame(columns=["record_id", "label", "prob", "segment_count", "quality_mean"])
     if record_level_enabled:
         val_quality_scores = raw_quality_scores[split_masks["val"]]
@@ -1108,6 +905,43 @@ def main() -> None:
             threshold=best_threshold,
         )
 
+    segment_val_predictions = build_segment_prediction_frame(
+        analysis_summary_df=analysis_summary_df,
+        split_mask=split_masks["val"],
+        grouped_record_ids=val_records,
+        labels=val_y,
+        probs=val_prob,
+        raw_quality_scores=raw_quality_scores,
+    )
+    segment_test_predictions = build_segment_prediction_frame(
+        analysis_summary_df=analysis_summary_df,
+        split_mask=split_masks["test"],
+        grouped_record_ids=test_records,
+        labels=test_y,
+        probs=test_prob,
+        raw_quality_scores=raw_quality_scores,
+    )
+    record_val = attach_group_metadata(record_val, segment_val_predictions)
+    record_test = attach_group_metadata(record_test, segment_test_predictions)
+    segment_val_sweep = build_threshold_sweep(val_y, val_prob)
+    segment_test_sweep = build_threshold_sweep(test_y, test_prob)
+    record_val_sweep = (
+        build_threshold_sweep(
+            record_val["label"].to_numpy(dtype=np.int64),
+            record_val["prob"].to_numpy(dtype=np.float32),
+        )
+        if record_level_enabled
+        else pd.DataFrame()
+    )
+    record_test_sweep = (
+        build_threshold_sweep(
+            record_test["label"].to_numpy(dtype=np.int64),
+            record_test["prob"].to_numpy(dtype=np.float32),
+        )
+        if record_level_enabled
+        else pd.DataFrame()
+    )
+
     experiment_summary = {
         "device": str(device),
         "split_mode": args.split_mode,
@@ -1120,6 +954,17 @@ def main() -> None:
         "initialization": initialization,
         "split_records": split_records,
         "threshold_objective": args.threshold_objective,
+        "loss_type": args.loss_type,
+        "loss_config": {
+            "asl_gamma_neg": args.asl_gamma_neg,
+            "asl_gamma_pos": args.asl_gamma_pos,
+            "asl_clip": args.asl_clip,
+            "asl_soft_f1_weight": args.asl_soft_f1_weight,
+        },
+        "balanced_sampler": args.balanced_sampler,
+        "sampler_positive_fraction": args.sampler_positive_fraction,
+        "pos_weight_scale": args.pos_weight_scale,
+        "model_config": model_config,
         "feature_columns": FEATURE_COLUMNS,
         "normalization": {
             "feature_medians": normalization_stats.feature_medians.tolist(),
@@ -1136,12 +981,32 @@ def main() -> None:
             "val": record_val_metrics,
             "test": record_test_metrics,
         },
+        "threshold_sweep_best_f1": {
+            "segment_val": best_threshold_row(segment_val_sweep, metric="f1"),
+            "segment_test_analysis_only": best_threshold_row(segment_test_sweep, metric="f1"),
+            "record_val": best_threshold_row(record_val_sweep, metric="f1") if record_level_enabled else None,
+            "record_test_analysis_only": (
+                best_threshold_row(record_test_sweep, metric="f1") if record_level_enabled else None
+            ),
+        },
         "runtime_seconds": time.time() - start_time,
     }
+
+    segment_val_predictions["predicted_label_at_best_threshold"] = (
+        segment_val_predictions["prob"] >= best_threshold
+    ).astype(np.int64)
+    segment_test_predictions["predicted_label_at_best_threshold"] = (
+        segment_test_predictions["prob"] >= best_threshold
+    ).astype(np.int64)
+    if not record_val.empty:
+        record_val["predicted_label_at_best_threshold"] = (record_val["prob"] >= best_threshold).astype(np.int64)
+    if not record_test.empty:
+        record_test["predicted_label_at_best_threshold"] = (record_test["prob"] >= best_threshold).astype(np.int64)
 
     torch.save(
         {
             "model_state_dict": model.state_dict(),
+            "model_config": model_config,
             "feature_columns": FEATURE_COLUMNS,
             "best_threshold": best_threshold,
             "init_checkpoint": str(args.init_checkpoint) if args.init_checkpoint is not None else None,
@@ -1156,11 +1021,14 @@ def main() -> None:
     )
 
     pd.DataFrame(history).to_csv(args.output_dir / "training_history.csv", index=False)
+    segment_val_predictions.to_csv(args.output_dir / "val_segment_predictions.csv", index=False)
+    record_val.to_csv(args.output_dir / "val_record_predictions.csv", index=False)
+    segment_val_sweep.to_csv(args.output_dir / "val_segment_threshold_sweep.csv", index=False)
+    segment_test_sweep.to_csv(args.output_dir / "test_segment_threshold_sweep.csv", index=False)
+    record_val_sweep.to_csv(args.output_dir / "val_record_threshold_sweep.csv", index=False)
+    record_test_sweep.to_csv(args.output_dir / "test_record_threshold_sweep.csv", index=False)
     record_test.to_csv(args.output_dir / "test_record_predictions.csv", index=False)
-    pd.DataFrame({"record_id": test_records, "label": test_y, "prob": test_prob}).to_csv(
-        args.output_dir / "test_segment_predictions.csv",
-        index=False,
-    )
+    segment_test_predictions.to_csv(args.output_dir / "test_segment_predictions.csv", index=False)
     save_json(experiment_summary, args.output_dir / "metrics.json")
 
     print("\nBest validation threshold:", round(best_threshold, 4))

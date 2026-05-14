@@ -5,13 +5,13 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=02:00:00
-#SBATCH --output=slurm_logs/ppg_gpu_sanity_%j.out
+#SBATCH --output=slurm-%x-%j.out
 
 set -euo pipefail
 
-PROJECT_DIR="/homes/mc1920/FYP/Atrial-Fibrillation-ML-main"
-VENV_PATH="/vol/bitbucket/${USER}/myvenv"
-STARTER_VENV="/vol/bitbucket/starter"
+PROJECT_DIR="${PROJECT_DIR:-/homes/mc1920/FYP/Atrial-Fibrillation-ML-main}"
+VENV_PATH="${VENV_PATH:-/vol/bitbucket/${USER}/myvenv}"
+STARTER_VENV="${STARTER_VENV:-/vol/bitbucket/starter}"
 
 mkdir -p "${PROJECT_DIR}/slurm_logs"
 cd "${PROJECT_DIR}"
@@ -45,4 +45,4 @@ else
 fi
 
 python --version
-python sanity_check.py
+python sanity_check.py --skip-data

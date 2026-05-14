@@ -1,0 +1,578 @@
+{
+  "output_dir": "/vol/bitbucket/mc1920/mimic_ext_p00_p01_p02_sqi_v2_ppg_1to2_20260426_194112",
+  "analysis_dir": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_saved_prediction_analysis",
+  "operating_threshold": 0.713,
+  "group_column": "group_id",
+  "top_k_list": [
+    3,
+    5,
+    10
+  ],
+  "levels": {
+    "segment_test": {
+      "at_operating_threshold": {
+        "threshold": 0.713,
+        "n": 74599,
+        "actual_positive": 6752,
+        "actual_negative": 67847,
+        "accuracy": 0.9525730907921017,
+        "sensitivity": 0.8843305687203792,
+        "specificity": 0.9593644523707754,
+        "precision": 0.6841200733272227,
+        "f1": 0.7714470284237727,
+        "tn": 65090,
+        "fp": 2757,
+        "fn": 781,
+        "tp": 5971,
+        "predicted_positive": 8728,
+        "predicted_negative": 65871
+      },
+      "best_f1_analysis_only": {
+        "threshold": 0.874,
+        "accuracy": 0.9610718642341051,
+        "sensitivity": 0.8095379146919431,
+        "specificity": 0.9761522248588737,
+        "precision": 0.7715979672501412,
+        "f1": 0.790112749349523,
+        "tn": 66229.0,
+        "fp": 1618.0,
+        "fn": 1286.0,
+        "tp": 5466.0,
+        "predicted_positive": 7084.0,
+        "predicted_negative": 67515.0
+      },
+      "threshold_sweep_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_saved_prediction_analysis/segment_test_threshold_sweep.csv"
+    },
+    "record_test": {
+      "at_operating_threshold": {
+        "threshold": 0.713,
+        "n": 5301,
+        "actual_positive": 688,
+        "actual_negative": 4613,
+        "accuracy": 0.9535936615732881,
+        "sensitivity": 0.8241279069767442,
+        "specificity": 0.9729026663776285,
+        "precision": 0.819364161849711,
+        "f1": 0.8217391304347826,
+        "tn": 4488,
+        "fp": 125,
+        "fn": 121,
+        "tp": 567,
+        "predicted_positive": 692,
+        "predicted_negative": 4609
+      },
+      "best_f1_analysis_only": {
+        "threshold": 0.834,
+        "accuracy": 0.958687040181098,
+        "sensitivity": 0.7906976744186046,
+        "specificity": 0.983741599826577,
+        "precision": 0.8788368336025848,
+        "f1": 0.8324407039020658,
+        "tn": 4538.0,
+        "fp": 75.0,
+        "fn": 144.0,
+        "tp": 544.0,
+        "predicted_positive": 619.0,
+        "predicted_negative": 4682.0
+      },
+      "threshold_sweep_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_saved_prediction_analysis/record_test_threshold_sweep.csv"
+    },
+    "segment_val": {
+      "at_operating_threshold": {
+        "threshold": 0.713,
+        "n": 93200,
+        "actual_positive": 10455,
+        "actual_negative": 82745,
+        "accuracy": 0.9743991416309012,
+        "sensitivity": 0.8329029172644667,
+        "specificity": 0.9922774790017523,
+        "precision": 0.9316358189793517,
+        "f1": 0.8795071204928796,
+        "tn": 82106,
+        "fp": 639,
+        "fn": 1747,
+        "tp": 8708,
+        "predicted_positive": 9347,
+        "predicted_negative": 83853
+      },
+      "best_f1_analysis_only": {
+        "threshold": 0.675,
+        "accuracy": 0.974206008583691,
+        "sensitivity": 0.8404591104734577,
+        "specificity": 0.9911052027312829,
+        "precision": 0.9227134306416045,
+        "f1": 0.8796676343978376,
+        "tn": 82009.0,
+        "fp": 736.0,
+        "fn": 1668.0,
+        "tp": 8787.0,
+        "predicted_positive": 9523.0,
+        "predicted_negative": 83677.0
+      },
+      "threshold_sweep_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_saved_prediction_analysis/segment_val_threshold_sweep.csv"
+    },
+    "record_val": {
+      "at_operating_threshold": {
+        "threshold": 0.713,
+        "n": 5742,
+        "actual_positive": 894,
+        "actual_negative": 4848,
+        "accuracy": 0.9782305816788576,
+        "sensitivity": 0.8736017897091722,
+        "specificity": 0.9975247524752475,
+        "precision": 0.9848675914249685,
+        "f1": 0.9259039715471251,
+        "tn": 4836,
+        "fp": 12,
+        "fn": 113,
+        "tp": 781,
+        "predicted_positive": 793,
+        "predicted_negative": 4949
+      },
+      "best_f1_analysis_only": {
+        "threshold": 0.713,
+        "accuracy": 0.9782305816788576,
+        "sensitivity": 0.8736017897091722,
+        "specificity": 0.9975247524752475,
+        "precision": 0.9848675914249685,
+        "f1": 0.9259039715471251,
+        "tn": 4836.0,
+        "fp": 12.0,
+        "fn": 113.0,
+        "tp": 781.0,
+        "predicted_positive": 793.0,
+        "predicted_negative": 4949.0
+      },
+      "threshold_sweep_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_saved_prediction_analysis/record_val_threshold_sweep.csv"
+    }
+  },
+  "aggregation": {
+    "predictions_long_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_saved_prediction_analysis/aggregation_predictions_long.csv",
+    "sweeps_long_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_saved_prediction_analysis/aggregation_threshold_sweeps_long.csv",
+    "summary_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_saved_prediction_analysis/aggregation_method_summary.csv",
+    "best_method_by_test_f1_at_val_threshold": {
+      "method": "quality_weighted_mean",
+      "group_column": "group_id",
+      "val_selected_threshold": 0.713,
+      "val_f1": 0.9259039715471251,
+      "val_precision": 0.9848675914249685,
+      "val_sensitivity": 0.8736017897091722,
+      "val_specificity": 0.9975247524752475,
+      "test_f1_at_val_threshold": 0.8217391304347826,
+      "test_precision_at_val_threshold": 0.819364161849711,
+      "test_sensitivity_at_val_threshold": 0.8241279069767442,
+      "test_specificity_at_val_threshold": 0.9729026663776285,
+      "test_accuracy_at_val_threshold": 0.9535936615732881,
+      "test_fp_at_val_threshold": 125,
+      "test_fn_at_val_threshold": 121,
+      "test_best_f1_analysis_only": 0.8324407039020658,
+      "test_best_threshold_analysis_only": 0.834
+    }
+  },
+  "false_positive_analysis": {
+    "segment_test": {
+      "operating_threshold": 0.713,
+      "fp_count": 2757,
+      "negative_examples": 67847,
+      "fp_rate_among_negatives": 0.040635547629224576,
+      "mean_fp_prob": 0.8789924284983677,
+      "median_fp_prob": 0.8974394,
+      "max_fp_prob": 0.97955865,
+      "top_fp_groups": [
+        {
+          "group_id": "3967075_0018::event_51",
+          "fp_count": 27,
+          "max_prob": 0.97476137,
+          "mean_prob": 0.9581153240740741,
+          "label": 0,
+          "record_id": "3967075_0018",
+          "subject_id": 2029,
+          "event_id": 51,
+          "signal_file_name": "3967075_0018_51_25",
+          "patient": "p002029",
+          "quality_mean": 0.9509046374074074
+        },
+        {
+          "group_id": "3967075_0010::event_21",
+          "fp_count": 27,
+          "max_prob": 0.96974075,
+          "mean_prob": 0.9259836814814816,
+          "label": 0,
+          "record_id": "3967075_0010",
+          "subject_id": 2029,
+          "event_id": 21,
+          "signal_file_name": "3967075_0010_21_28",
+          "patient": "p002029",
+          "quality_mean": 0.9488473340740741
+        },
+        {
+          "group_id": "3967075_0018::event_57",
+          "fp_count": 26,
+          "max_prob": 0.97460407,
+          "mean_prob": 0.95126824,
+          "label": 0,
+          "record_id": "3967075_0018",
+          "subject_id": 2029,
+          "event_id": 57,
+          "signal_file_name": "3967075_0018_57_3",
+          "patient": "p002029",
+          "quality_mean": 0.9568610773076924
+        },
+        {
+          "group_id": "3967075_0010::event_25",
+          "fp_count": 26,
+          "max_prob": 0.9713465,
+          "mean_prob": 0.9586549376923077,
+          "label": 0,
+          "record_id": "3967075_0010",
+          "subject_id": 2029,
+          "event_id": 25,
+          "signal_file_name": "3967075_0010_25_22",
+          "patient": "p002029",
+          "quality_mean": 0.9427603942307693
+        },
+        {
+          "group_id": "3967075_0018::event_54",
+          "fp_count": 26,
+          "max_prob": 0.9625193,
+          "mean_prob": 0.8779093015384615,
+          "label": 0,
+          "record_id": "3967075_0018",
+          "subject_id": 2029,
+          "event_id": 54,
+          "signal_file_name": "3967075_0018_54_5",
+          "patient": "p002029",
+          "quality_mean": 0.9489427961538461
+        },
+        {
+          "group_id": "3967075_0010::event_23",
+          "fp_count": 26,
+          "max_prob": 0.9602684,
+          "mean_prob": 0.9158863065384615,
+          "label": 0,
+          "record_id": "3967075_0010",
+          "subject_id": 2029,
+          "event_id": 23,
+          "signal_file_name": "3967075_0010_23_9",
+          "patient": "p002029",
+          "quality_mean": 0.9502488830769231
+        },
+        {
+          "group_id": "3967075_0008::event_12",
+          "fp_count": 26,
+          "max_prob": 0.9514749,
+          "mean_prob": 0.8987558615384615,
+          "label": 0,
+          "record_id": "3967075_0008",
+          "subject_id": 2029,
+          "event_id": 12,
+          "signal_file_name": "3967075_0008_12_25",
+          "patient": "p002029",
+          "quality_mean": 0.9362040576923077
+        },
+        {
+          "group_id": "3967075_0008::event_67",
+          "fp_count": 25,
+          "max_prob": 0.97156394,
+          "mean_prob": 0.9513436695999999,
+          "label": 0,
+          "record_id": "3967075_0008",
+          "subject_id": 2029,
+          "event_id": 67,
+          "signal_file_name": "3967075_0008_67_9",
+          "patient": "p002029",
+          "quality_mean": 0.9450242540000001
+        },
+        {
+          "group_id": "3967075_0018::event_28",
+          "fp_count": 25,
+          "max_prob": 0.9695035,
+          "mean_prob": 0.9460379919999999,
+          "label": 0,
+          "record_id": "3967075_0018",
+          "subject_id": 2029,
+          "event_id": 28,
+          "signal_file_name": "3967075_0018_28_8",
+          "patient": "p002029",
+          "quality_mean": 0.9527747308
+        },
+        {
+          "group_id": "3967075_0008::event_16",
+          "fp_count": 25,
+          "max_prob": 0.9615377,
+          "mean_prob": 0.901623972,
+          "label": 0,
+          "record_id": "3967075_0008",
+          "subject_id": 2029,
+          "event_id": 16,
+          "signal_file_name": "3967075_0008_16_21",
+          "patient": "p002029",
+          "quality_mean": 0.9558902311999999
+        }
+      ],
+      "top_fp_subjects": [
+        {
+          "subject_id": 2029,
+          "fp_count": 1481,
+          "max_prob": 0.97917414,
+          "mean_prob": 0.9082656791897367
+        },
+        {
+          "subject_id": 29527,
+          "fp_count": 254,
+          "max_prob": 0.9627507,
+          "mean_prob": 0.8566134689763779
+        },
+        {
+          "subject_id": 11236,
+          "fp_count": 110,
+          "max_prob": 0.9724805,
+          "mean_prob": 0.8330206513636365
+        },
+        {
+          "subject_id": 24387,
+          "fp_count": 81,
+          "max_prob": 0.96929395,
+          "mean_prob": 0.9442671032098766
+        },
+        {
+          "subject_id": 15902,
+          "fp_count": 81,
+          "max_prob": 0.96663713,
+          "mean_prob": 0.8136921943209876
+        },
+        {
+          "subject_id": 21900,
+          "fp_count": 79,
+          "max_prob": 0.96696013,
+          "mean_prob": 0.8546889679746835
+        },
+        {
+          "subject_id": 27106,
+          "fp_count": 79,
+          "max_prob": 0.9601084,
+          "mean_prob": 0.7990793540506329
+        },
+        {
+          "subject_id": 3491,
+          "fp_count": 51,
+          "max_prob": 0.96868,
+          "mean_prob": 0.8727220835294117
+        },
+        {
+          "subject_id": 12589,
+          "fp_count": 42,
+          "max_prob": 0.9614214,
+          "mean_prob": 0.8311357497619047
+        },
+        {
+          "subject_id": 7614,
+          "fp_count": 35,
+          "max_prob": 0.97659916,
+          "mean_prob": 0.8556786657142857
+        }
+      ],
+      "false_positive_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_saved_prediction_analysis/segment_test_false_positives.csv",
+      "by_group_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_saved_prediction_analysis/segment_test_false_positives_by_group.csv",
+      "by_subject_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_saved_prediction_analysis/segment_test_false_positives_by_subject.csv",
+      "by_quality_bin_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_saved_prediction_analysis/segment_test_false_positives_by_quality_bin.csv"
+    },
+    "record_test": {
+      "operating_threshold": 0.713,
+      "fp_count": 125,
+      "negative_examples": 4613,
+      "fp_rate_among_negatives": 0.02709733362237156,
+      "mean_fp_prob": 0.8603056926727295,
+      "median_fp_prob": 0.8673460483551025,
+      "max_fp_prob": 0.9742821455001832,
+      "top_fp_groups": [
+        {
+          "group_id": "3967075_0018::event_42",
+          "fp_count": 1,
+          "max_prob": 0.9742821455001832,
+          "mean_prob": 0.9742821455001832,
+          "label": 0,
+          "record_id": "3967075_0018::event_42",
+          "subject_id": 2029,
+          "event_id": 42,
+          "signal_file_name": "3967075_0018_42_0",
+          "patient": "p002029"
+        },
+        {
+          "group_id": "3967075_0018::event_49",
+          "fp_count": 1,
+          "max_prob": 0.9712701439857484,
+          "mean_prob": 0.9712701439857484,
+          "label": 0,
+          "record_id": "3967075_0018::event_49",
+          "subject_id": 2029,
+          "event_id": 49,
+          "signal_file_name": "3967075_0018_49_0",
+          "patient": "p002029"
+        },
+        {
+          "group_id": "3967075_0018::event_60",
+          "fp_count": 1,
+          "max_prob": 0.9658280611038208,
+          "mean_prob": 0.9658280611038208,
+          "label": 0,
+          "record_id": "3967075_0018::event_60",
+          "subject_id": 2029,
+          "event_id": 60,
+          "signal_file_name": "3967075_0018_60_0",
+          "patient": "p002029"
+        },
+        {
+          "group_id": "3967075_0018::event_30",
+          "fp_count": 1,
+          "max_prob": 0.965054988861084,
+          "mean_prob": 0.965054988861084,
+          "label": 0,
+          "record_id": "3967075_0018::event_30",
+          "subject_id": 2029,
+          "event_id": 30,
+          "signal_file_name": "3967075_0018_30_1",
+          "patient": "p002029"
+        },
+        {
+          "group_id": "3967075_0022::event_5",
+          "fp_count": 1,
+          "max_prob": 0.9624937772750854,
+          "mean_prob": 0.9624937772750854,
+          "label": 0,
+          "record_id": "3967075_0022::event_5",
+          "subject_id": 2029,
+          "event_id": 5,
+          "signal_file_name": "3967075_0022_5_0",
+          "patient": "p002029"
+        },
+        {
+          "group_id": "3967075_0018::event_61",
+          "fp_count": 1,
+          "max_prob": 0.9620476961135864,
+          "mean_prob": 0.9620476961135864,
+          "label": 0,
+          "record_id": "3967075_0018::event_61",
+          "subject_id": 2029,
+          "event_id": 61,
+          "signal_file_name": "3967075_0018_61_0",
+          "patient": "p002029"
+        },
+        {
+          "group_id": "3967075_0023::event_5",
+          "fp_count": 1,
+          "max_prob": 0.9609306454658508,
+          "mean_prob": 0.9609306454658508,
+          "label": 0,
+          "record_id": "3967075_0023::event_5",
+          "subject_id": 2029,
+          "event_id": 5,
+          "signal_file_name": "3967075_0023_5_1",
+          "patient": "p002029"
+        },
+        {
+          "group_id": "3967075_0018::event_52",
+          "fp_count": 1,
+          "max_prob": 0.9600968956947328,
+          "mean_prob": 0.9600968956947328,
+          "label": 0,
+          "record_id": "3967075_0018::event_52",
+          "subject_id": 2029,
+          "event_id": 52,
+          "signal_file_name": "3967075_0018_52_0",
+          "patient": "p002029"
+        },
+        {
+          "group_id": "3967075_0018::event_56",
+          "fp_count": 1,
+          "max_prob": 0.9600822925567628,
+          "mean_prob": 0.9600822925567628,
+          "label": 0,
+          "record_id": "3967075_0018::event_56",
+          "subject_id": 2029,
+          "event_id": 56,
+          "signal_file_name": "3967075_0018_56_0",
+          "patient": "p002029"
+        },
+        {
+          "group_id": "3068462_0009::event_9",
+          "fp_count": 1,
+          "max_prob": 0.9589089155197144,
+          "mean_prob": 0.9589089155197144,
+          "label": 0,
+          "record_id": "3068462_0009::event_9",
+          "subject_id": 2981,
+          "event_id": 9,
+          "signal_file_name": "3068462_0009_9_3",
+          "patient": "p002981"
+        }
+      ],
+      "top_fp_subjects": [
+        {
+          "subject_id": 2029,
+          "fp_count": 67,
+          "max_prob": 0.9742821455001832,
+          "mean_prob": 0.8792411444792106
+        },
+        {
+          "subject_id": 7614,
+          "fp_count": 9,
+          "max_prob": 0.940830945968628,
+          "mean_prob": 0.8280305928654141
+        },
+        {
+          "subject_id": 15902,
+          "fp_count": 8,
+          "max_prob": 0.948342263698578,
+          "mean_prob": 0.7959884703159332
+        },
+        {
+          "subject_id": 24387,
+          "fp_count": 5,
+          "max_prob": 0.9544568061828612,
+          "mean_prob": 0.9430283904075623
+        },
+        {
+          "subject_id": 29527,
+          "fp_count": 4,
+          "max_prob": 0.7806788086891174,
+          "mean_prob": 0.7488066405057907
+        },
+        {
+          "subject_id": 2981,
+          "fp_count": 3,
+          "max_prob": 0.9589089155197144,
+          "mean_prob": 0.9307483832041422
+        },
+        {
+          "subject_id": 8929,
+          "fp_count": 3,
+          "max_prob": 0.941483438014984,
+          "mean_prob": 0.8638147910435995
+        },
+        {
+          "subject_id": 15488,
+          "fp_count": 3,
+          "max_prob": 0.908007025718689,
+          "mean_prob": 0.8990988532702128
+        },
+        {
+          "subject_id": 29164,
+          "fp_count": 2,
+          "max_prob": 0.9211487770080566,
+          "mean_prob": 0.8693882822990417
+        },
+        {
+          "subject_id": 3491,
+          "fp_count": 2,
+          "max_prob": 0.9125494360923768,
+          "mean_prob": 0.8843753635883331
+        }
+      ],
+      "false_positive_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_saved_prediction_analysis/record_test_false_positives.csv",
+      "by_group_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_saved_prediction_analysis/record_test_false_positives_by_group.csv",
+      "by_subject_csv": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_saved_prediction_analysis/record_test_false_positives_by_subject.csv",
+      "by_quality_bin_csv": null
+    }
+  }
+}

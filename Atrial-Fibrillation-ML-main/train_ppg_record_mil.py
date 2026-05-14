@@ -5,60 +5,50 @@ import copy
 import json
 import math
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn.functional as F
 from torch import nn
-from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
-from ppg_record_mil_model import RecordMILPPGNet
-from train_ppg_hybrid import (
-    FEATURE_COLUMNS,
-    _parse_fold_list,
+from af_pipeline.data import (
+    RecordBagDataset,
+    collate_record_bags,
+    group_segments_into_bags,
+    load_and_concat_signal_datasets,
+)
+from af_pipeline.features import (
+    QUALITY_COLUMNS,
+    build_quality_feature_matrix,
+    fill_and_scale_features,
+    make_multiscale_rhythm_features,
+)
+from af_pipeline.losses import RecordLevelHardMiningLoss
+from af_pipeline.runtime import (
     choose_amp,
     compute_metrics,
-    create_metadata_fold_split_masks,
-    create_random_window_split_masks,
-    create_split_masks,
-    fill_and_scale_features,
     find_best_threshold,
     format_duration,
     get_device,
-    infer_record_grouping,
-    load_and_concat_signal_datasets,
     log_stage,
     safe_probability_metric,
+    save_json,
     set_seed,
+)
+from af_pipeline.splits import (
+    _parse_fold_list,
+    create_metadata_fold_split_masks,
+    create_random_window_split_masks,
+    create_split_masks,
+    infer_record_grouping,
     stratified_record_split,
     validate_split_masks,
 )
-
-RHYTHM_CONTEXT_COLUMNS = [
-    "mean_hr_bpm",
-    "sdnn_ms",
-    "rmssd_ms",
-    "pnn50",
-    "cv_ibi",
-    "sample_entropy",
-    "signal_spectral_entropy",
-]
-
-QUALITY_COLUMNS = [
-    "quality_score",
-    "template_correlation",
-    "heart_band_energy_ratio",
-]
-
-
-@dataclass
-class CombinedFeatureStats:
-    means: np.ndarray
-    stds: np.ndarray
+from ppg_record_hierarchical_model import HierarchicalRecordPPGNet
+from ppg_record_mil_model import RecordMILPPGNet
 
 
 def logit_transform(probabilities: np.ndarray) -> np.ndarray:
@@ -74,257 +64,6 @@ def quality_adjusted_probabilities(
     logits = logit_transform(probabilities)
     adjusted_logits = logits + strength * (np.asarray(quality_confidence, dtype=np.float32) - 0.5)
     return 1.0 / (1.0 + np.exp(-adjusted_logits))
-
-
-def make_multiscale_rhythm_features(
-    summary_df: pd.DataFrame,
-    group_ids: pd.Series,
-    split_masks: dict[str, np.ndarray],
-) -> tuple[np.ndarray, list[str], CombinedFeatureStats]:
-    base_features = summary_df[FEATURE_COLUMNS].to_numpy(dtype=np.float32)
-    context_source = summary_df[RHYTHM_CONTEXT_COLUMNS].to_numpy(dtype=np.float32)
-    start_times = pd.to_numeric(summary_df["start_time_sec"], errors="coerce").fillna(0.0).to_numpy(dtype=np.float32)
-    group_array = group_ids.astype(str).to_numpy()
-
-    extras = []
-    extra_names = []
-    for window_size, label in ((2, "60s"), (4, "120s")):
-        mean_values = np.zeros((summary_df.shape[0], len(RHYTHM_CONTEXT_COLUMNS)), dtype=np.float32)
-        std_values = np.zeros((summary_df.shape[0], len(RHYTHM_CONTEXT_COLUMNS)), dtype=np.float32)
-        for _, positions in pd.Series(np.arange(summary_df.shape[0])).groupby(group_array):
-            ordered = positions.to_numpy()
-            ordered = ordered[np.argsort(start_times[ordered])]
-            frame = pd.DataFrame(context_source[ordered], columns=RHYTHM_CONTEXT_COLUMNS)
-            mean_block = frame.rolling(window=window_size, min_periods=1).mean().to_numpy(dtype=np.float32)
-            std_block = frame.rolling(window=window_size, min_periods=1).std().fillna(0.0).to_numpy(dtype=np.float32)
-            mean_values[ordered] = mean_block
-            std_values[ordered] = std_block
-        extras.extend([mean_values, std_values])
-        extra_names.extend([f"{column}_mean_{label}" for column in RHYTHM_CONTEXT_COLUMNS])
-        extra_names.extend([f"{column}_std_{label}" for column in RHYTHM_CONTEXT_COLUMNS])
-
-    delta_120 = context_source - extras[2]
-    extras.append(delta_120.astype(np.float32))
-    extra_names.extend([f"{column}_delta_120s" for column in RHYTHM_CONTEXT_COLUMNS])
-
-    combined = np.concatenate([base_features] + extras, axis=1).astype(np.float32)
-    train_features = combined[split_masks["train"]]
-    means = train_features.mean(axis=0).astype(np.float32)
-    stds = train_features.std(axis=0).astype(np.float32)
-    stds[stds == 0.0] = 1.0
-    combined = (combined - means) / stds
-
-    combined_names = list(FEATURE_COLUMNS) + extra_names
-    return combined, combined_names, CombinedFeatureStats(means=means, stds=stds)
-
-
-def build_quality_feature_matrix(summary_df: pd.DataFrame) -> np.ndarray:
-    quality = summary_df[QUALITY_COLUMNS].copy()
-    quality["quality_score"] = pd.to_numeric(quality["quality_score"], errors="coerce").fillna(0.5).clip(0.0, 1.0)
-    quality["template_correlation"] = (
-        pd.to_numeric(quality["template_correlation"], errors="coerce").fillna(0.5).clip(0.0, 1.0)
-    )
-    quality["heart_band_energy_ratio"] = (
-        pd.to_numeric(quality["heart_band_energy_ratio"], errors="coerce").fillna(0.5).clip(0.0, 1.0)
-    )
-    return quality.to_numpy(dtype=np.float32)
-
-
-def select_representative_segments(
-    ordered_indices: np.ndarray,
-    quality_scores: np.ndarray,
-    max_segments: int,
-) -> np.ndarray:
-    if ordered_indices.size <= max_segments:
-        return ordered_indices
-
-    anchor_positions = np.linspace(0, ordered_indices.size - 1, num=max_segments)
-    selected_positions = np.unique(np.round(anchor_positions).astype(np.int64))
-    if selected_positions.size < max_segments:
-        remaining_positions = np.setdiff1d(np.arange(ordered_indices.size), selected_positions, assume_unique=True)
-        remaining_scores = quality_scores[ordered_indices[remaining_positions]]
-        top_remaining = remaining_positions[np.argsort(remaining_scores)[::-1][: max_segments - selected_positions.size]]
-        selected_positions = np.sort(np.concatenate([selected_positions, top_remaining]))
-    selected_positions = np.sort(selected_positions[:max_segments])
-    return ordered_indices[selected_positions]
-
-
-def group_segments_into_bags(
-    summary_df: pd.DataFrame,
-    split_masks: dict[str, np.ndarray],
-    group_ids: pd.Series,
-    raw_quality_scores: np.ndarray,
-    max_segments_per_record: int,
-    eval_max_segments_per_record: int,
-    max_groups_per_split: int | None = None,
-) -> dict[str, list[dict[str, Any]]]:
-    bags_by_split: dict[str, list[dict[str, Any]]] = {}
-    start_times = pd.to_numeric(summary_df["start_time_sec"], errors="coerce").fillna(0.0).to_numpy(dtype=np.float32)
-
-    for split_name, mask in split_masks.items():
-        split_frame = summary_df.loc[mask].copy()
-        split_frame["_row_index"] = np.flatnonzero(mask)
-        split_frame["_group_id"] = group_ids.loc[mask].astype(str).to_numpy()
-        split_frame = split_frame.sort_values(["_group_id", "start_time_sec", "segment_index"], kind="mergesort")
-
-        records: list[dict[str, Any]] = []
-        for group_id, group in split_frame.groupby("_group_id", sort=False):
-            ordered_indices = group["_row_index"].to_numpy(dtype=np.int64)
-            quality_scores = raw_quality_scores[ordered_indices]
-            max_segments = max_segments_per_record if split_name == "train" else eval_max_segments_per_record
-            selected_indices = select_representative_segments(
-                ordered_indices=ordered_indices,
-                quality_scores=quality_scores,
-                max_segments=max_segments,
-            )
-            selected_start_times = start_times[selected_indices]
-            records.append(
-                {
-                    "group_id": str(group_id),
-                    "record_id": str(group["record_id"].iloc[0]),
-                    "label": float(group["label"].iloc[0]),
-                    "indices": selected_indices[np.argsort(selected_start_times)],
-                    "full_segment_count": int(group.shape[0]),
-                    "quality_mean": float(quality_scores.mean()),
-                }
-            )
-
-        if max_groups_per_split is not None and max_groups_per_split > 0 and len(records) > max_groups_per_split:
-            records = records[:max_groups_per_split]
-        bags_by_split[split_name] = records
-
-    return bags_by_split
-
-
-class RecordBagDataset(Dataset):
-    def __init__(
-        self,
-        signals: np.ndarray,
-        combined_features: np.ndarray,
-        quality_features: np.ndarray,
-        bags: list[dict[str, Any]],
-    ):
-        self.signals = signals.astype(np.float32)
-        self.combined_features = combined_features.astype(np.float32)
-        self.quality_features = quality_features.astype(np.float32)
-        self.bags = bags
-
-    def __len__(self) -> int:
-        return len(self.bags)
-
-    def __getitem__(self, index: int) -> dict[str, Any]:
-        bag = self.bags[index]
-        segment_indices = bag["indices"]
-        return {
-            "waveforms": self.signals[segment_indices],
-            "rhythm_features": self.combined_features[segment_indices],
-            "quality_features": self.quality_features[segment_indices],
-            "label": bag["label"],
-            "group_id": bag["group_id"],
-            "record_id": bag["record_id"],
-            "segment_count": len(segment_indices),
-            "full_segment_count": bag["full_segment_count"],
-        }
-
-
-def collate_record_bags(batch: list[dict[str, Any]]) -> dict[str, Any]:
-    max_segments = max(item["segment_count"] for item in batch)
-    signal_length = batch[0]["waveforms"].shape[1]
-    rhythm_feature_dim = batch[0]["rhythm_features"].shape[1]
-    quality_feature_dim = batch[0]["quality_features"].shape[1]
-
-    waveforms = torch.zeros(len(batch), max_segments, signal_length, dtype=torch.float32)
-    rhythm_features = torch.zeros(len(batch), max_segments, rhythm_feature_dim, dtype=torch.float32)
-    quality_features = torch.zeros(len(batch), max_segments, quality_feature_dim, dtype=torch.float32)
-    mask = torch.zeros(len(batch), max_segments, dtype=torch.bool)
-    labels = torch.zeros(len(batch), dtype=torch.float32)
-    group_ids: list[str] = []
-    record_ids: list[str] = []
-    full_segment_counts = torch.zeros(len(batch), dtype=torch.int32)
-
-    for batch_index, item in enumerate(batch):
-        segment_count = item["segment_count"]
-        waveforms[batch_index, :segment_count] = torch.from_numpy(item["waveforms"])
-        rhythm_features[batch_index, :segment_count] = torch.from_numpy(item["rhythm_features"])
-        quality_features[batch_index, :segment_count] = torch.from_numpy(item["quality_features"])
-        mask[batch_index, :segment_count] = True
-        labels[batch_index] = float(item["label"])
-        group_ids.append(item["group_id"])
-        record_ids.append(item["record_id"])
-        full_segment_counts[batch_index] = int(item["full_segment_count"])
-
-    return {
-        "waveforms": waveforms,
-        "rhythm_features": rhythm_features,
-        "quality_features": quality_features,
-        "mask": mask,
-        "labels": labels,
-        "group_ids": np.asarray(group_ids),
-        "record_ids": np.asarray(record_ids),
-        "full_segment_counts": full_segment_counts,
-    }
-
-
-class RecordLevelHardMiningLoss(nn.Module):
-    def __init__(
-        self,
-        pos_weight: float,
-        segment_aux_weight: float = 0.1,
-        hard_negative_scale: float = 1.5,
-        hard_positive_scale: float = 0.75,
-        segment_quality_power: float = 2.0,
-    ):
-        super().__init__()
-        self.register_buffer("pos_weight", torch.tensor([pos_weight], dtype=torch.float32))
-        self.segment_aux_weight = segment_aux_weight
-        self.hard_negative_scale = hard_negative_scale
-        self.hard_positive_scale = hard_positive_scale
-        self.segment_quality_power = segment_quality_power
-
-    def forward(
-        self,
-        record_logits: torch.Tensor,
-        segment_logits: torch.Tensor,
-        labels: torch.Tensor,
-        quality_features: torch.Tensor,
-        mask: torch.Tensor,
-    ) -> torch.Tensor:
-        record_targets = labels.float()
-        record_bce = F.binary_cross_entropy_with_logits(
-            record_logits,
-            record_targets,
-            reduction="none",
-            pos_weight=self.pos_weight.to(record_logits.device),
-        )
-        record_prob = torch.sigmoid(record_logits).detach()
-        record_hard_weight = (
-            1.0
-            + self.hard_negative_scale * ((1.0 - record_targets) * record_prob.square())
-            + self.hard_positive_scale * (record_targets * (1.0 - record_prob).square())
-        )
-        record_loss = (record_bce * record_hard_weight).mean()
-
-        segment_targets = record_targets.unsqueeze(1).expand_as(segment_logits)
-        segment_bce = F.binary_cross_entropy_with_logits(
-            segment_logits,
-            segment_targets,
-            reduction="none",
-            pos_weight=self.pos_weight.to(segment_logits.device),
-        )
-        segment_prob = torch.sigmoid(segment_logits).detach()
-        segment_hard_weight = (
-            1.0
-            + self.hard_negative_scale * ((1.0 - segment_targets) * segment_prob.square())
-            + self.hard_positive_scale * (segment_targets * (1.0 - segment_prob).square())
-        )
-        segment_quality_confidence = quality_features.mean(dim=-1).clamp(0.0, 1.0)
-        segment_quality_weight = 0.25 + 0.75 * segment_quality_confidence.pow(self.segment_quality_power)
-        masked_segment_loss = (
-            segment_bce * segment_hard_weight * segment_quality_weight * mask.float()
-        ).sum() / mask.float().sum().clamp_min(1.0)
-        return record_loss + self.segment_aux_weight * masked_segment_loss
-
-
 def run_training_epoch(
     model: nn.Module,
     dataloader: DataLoader,
@@ -468,12 +207,6 @@ def evaluate_model(
                     )
 
     return pd.DataFrame.from_records(record_rows), pd.DataFrame.from_records(segment_rows)
-
-
-def save_json(payload: dict[str, Any], path: Path) -> None:
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-
 def get_score_column_name(decision_score: str) -> str:
     if decision_score == "prob":
         return "prob"
@@ -532,6 +265,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--attention-quality-floor", type=float, default=0.35)
     parser.add_argument("--attention-quality-power", type=float, default=2.0)
     parser.add_argument("--max-groups-per-split", type=int, default=0)
+    parser.add_argument(
+        "--model-type",
+        choices=("mil", "hierarchical"),
+        default="mil",
+        help="Record-level architecture to train.",
+    )
+    parser.add_argument("--token-dim", type=int, default=192)
+    parser.add_argument("--transformer-layers", type=int, default=2)
+    parser.add_argument("--transformer-heads", type=int, default=8)
     return parser.parse_args()
 
 
@@ -669,12 +411,24 @@ def main() -> None:
         flush=True,
     )
 
-    model = RecordMILPPGNet(
-        rhythm_feature_dim=combined_features.shape[1],
-        quality_feature_dim=quality_matrix.shape[1],
-        quality_floor=args.attention_quality_floor,
-        quality_power=args.attention_quality_power,
-    ).to(device)
+    if args.model_type == "hierarchical":
+        model = HierarchicalRecordPPGNet(
+            rhythm_feature_dim=combined_features.shape[1],
+            quality_feature_dim=quality_matrix.shape[1],
+            token_dim=args.token_dim,
+            transformer_layers=args.transformer_layers,
+            transformer_heads=args.transformer_heads,
+            quality_floor=args.attention_quality_floor,
+            quality_power=args.attention_quality_power,
+        ).to(device)
+    else:
+        model = RecordMILPPGNet(
+            rhythm_feature_dim=combined_features.shape[1],
+            quality_feature_dim=quality_matrix.shape[1],
+            token_dim=args.token_dim,
+            quality_floor=args.attention_quality_floor,
+            quality_power=args.attention_quality_power,
+        ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
     loss_fn = RecordLevelHardMiningLoss(
@@ -819,6 +573,10 @@ def main() -> None:
         "segment_quality_power": args.segment_quality_power,
         "attention_quality_floor": args.attention_quality_floor,
         "attention_quality_power": args.attention_quality_power,
+        "model_type": args.model_type,
+        "token_dim": args.token_dim,
+        "transformer_layers": args.transformer_layers,
+        "transformer_heads": args.transformer_heads,
         "record_level": {
             "val": record_val_metrics,
             "test": record_test_metrics,
@@ -858,6 +616,10 @@ def main() -> None:
             "segment_quality_power": args.segment_quality_power,
             "attention_quality_floor": args.attention_quality_floor,
             "attention_quality_power": args.attention_quality_power,
+            "model_type": args.model_type,
+            "token_dim": args.token_dim,
+            "transformer_layers": args.transformer_layers,
+            "transformer_heads": args.transformer_heads,
             "combined_feature_columns": combined_feature_names,
             "combined_feature_stats": {
                 "means": combined_feature_stats.means,

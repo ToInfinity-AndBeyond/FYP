@@ -1,0 +1,77 @@
+{
+  "created_at": "2026-05-14T09:15:00+01:00",
+  "completed": {
+    "strategy_1_calibration": {
+      "script": "strategies/s1_calibration_s2_selective.py",
+      "output_dir": "paper/results/s1_s2_posthoc",
+      "best_global": {
+        "model": "waveform",
+        "calibration": "isotonic",
+        "aggregation": "trimmed_mean",
+        "threshold": 0.443,
+        "test_f1": 0.8069204152249135,
+        "test_precision": 0.7701453104359313,
+        "test_sensitivity": 0.8473837209302325,
+        "test_specificity": 0.9622805115976588,
+        "test_auroc": 0.936571128610247,
+        "test_auprc": 0.8177089487118748
+      }
+    },
+    "strategy_2_selective_classification": {
+      "script": "strategies/s1_calibration_s2_selective.py",
+      "output_dir": "paper/results/s1_s2_posthoc",
+      "best_confidence": "sqi_margin",
+      "headline_points": [
+        {
+          "coverage": 0.5,
+          "f1": 0.9222011385199241,
+          "precision": 0.9204545454545454,
+          "sensitivity": 0.9239543726235742,
+          "specificity": 0.9912023460410557
+        },
+        {
+          "coverage": 0.7,
+          "f1": 0.8866995073891626,
+          "precision": 0.8955223880597015,
+          "sensitivity": 0.8780487804878049,
+          "specificity": 0.9872765828536807
+        },
+        {
+          "coverage": 0.8,
+          "f1": 0.8816986855409504,
+          "precision": 0.8916155419222904,
+          "sensitivity": 0.872,
+          "specificity": 0.9858326650628174
+        }
+      ]
+    }
+  },
+  "running_or_queued": {
+    "strategy_3_asl_finetune": {
+      "job_id": "240880",
+      "script": "run_qa_beatformer_asl_array.slurm",
+      "status": "array task 0 running; tasks 1-2 pending behind array limit",
+      "log": "slurm-qa_asl_array-240880_0.out"
+    },
+    "strategy_4_ecg_supervised_distillation": {
+      "job_id": "240886",
+      "script": "run_physio_distill_ssl_init.slurm",
+      "status": "pending due QOSMaxGRESPerUser after bugfix/requeue",
+      "note": "Uses Zenodo paired ECG-PPG; not directly the p00-p02 MIMIC test set."
+    },
+    "strategy_5_mimic_ppg_ssl_simclr": {
+      "job_id": "240887",
+      "script": "run_mimic_ppg_ssl_simclr.slurm",
+      "status": "requeued after fixing AMP overflow in NT-Xent loss",
+      "log": "slurm-mimic_ppg_ssl-240887.out",
+      "previous_failed_job": "240885"
+    },
+    "auxiliary_cross_modal_ssl_zenodo": {
+      "job_id": "240882",
+      "script": "run_physio_ssl_full.slurm",
+      "status": "running",
+      "log": "slurm-physio_ssl_full-240882.out"
+    }
+  },
+  "important_caveat": "p00-p02 main results are PPG-only MIMIC. ECG-supervised jobs use Zenodo paired ECG-PPG and should be presented as auxiliary, not directly mixed with the main test-set comparison."
+}

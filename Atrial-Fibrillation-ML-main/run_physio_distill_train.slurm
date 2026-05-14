@@ -1,20 +1,20 @@
 #!/bin/bash
 #SBATCH --job-name=physio_distill_train
-#SBATCH --gres=gpu:nvidia_a30:1
+#SBATCH --gres=gpu:1
 #SBATCH --partition=a30
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=32G
 #SBATCH --time=12:00:00
-#SBATCH --output=slurm_logs/physio_distill_%j.out
+#SBATCH --output=slurm-%x-%j.out
 
 set -euo pipefail
 
-PROJECT_DIR="/homes/mc1920/FYP/Atrial-Fibrillation-ML-main"
-VENV_PATH="/vol/bitbucket/${USER}/myvenv"
-STARTER_VENV="/vol/bitbucket/starter"
-SEGMENTS_PATH="${PROJECT_DIR}/artifacts/physio_distill/physio_multimodal_accepted_segments.npz"
-SUMMARY_PATH="${PROJECT_DIR}/artifacts/physio_distill/physio_multimodal_accepted_segment_summary.csv"
-OUTPUT_DIR="${PROJECT_DIR}/artifacts/experiments/physio_distill_mimic_rerun"
+PROJECT_DIR="${PROJECT_DIR:-/homes/mc1920/FYP/Atrial-Fibrillation-ML-main}"
+VENV_PATH="${VENV_PATH:-/vol/bitbucket/${USER}/myvenv}"
+STARTER_VENV="${STARTER_VENV:-/vol/bitbucket/starter}"
+SEGMENTS_PATH="${SEGMENTS_PATH:-${PROJECT_DIR}/artifacts/physio_distill/physio_multimodal_accepted_segments.npz}"
+SUMMARY_PATH="${SUMMARY_PATH:-${PROJECT_DIR}/artifacts/physio_distill/physio_multimodal_accepted_segment_summary.csv}"
+OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR}/artifacts/experiments/physio_distill_mimic_rerun}"
 
 mkdir -p "${PROJECT_DIR}/slurm_logs"
 mkdir -p "${OUTPUT_DIR}"

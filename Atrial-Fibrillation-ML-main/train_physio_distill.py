@@ -4,20 +4,36 @@ import argparse
 import copy
 import json
 import math
-import random
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn.functional as F
-from sklearn.metrics import average_precision_score, confusion_matrix, f1_score, roc_auc_score
 from torch import nn
-from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
+from af_pipeline.data import PPGAugment, PhysioDataset, load_and_concat_multimodal_datasets
+from af_pipeline.features import fill_and_scale_columns, prepare_aux_targets, stats_to_jsonable
+from af_pipeline.losses import DistillationLoss
+from af_pipeline.runtime import (
+    choose_amp,
+    compute_metrics,
+    find_best_threshold,
+    format_duration,
+    get_device,
+    save_json,
+    set_seed,
+)
+from af_pipeline.splits import (
+    _parse_fold_list,
+    choose_split_group_column,
+    create_metadata_fold_split_masks,
+    create_split_masks,
+    stratified_group_split,
+    validate_split_masks,
+)
 from physio_distill_model import PhysiologyAwareDistillationNet
 
 STUDENT_FEATURE_COLUMNS = [
@@ -72,433 +88,9 @@ AUX_TARGET_COLUMNS = [
     "resp_ppg_amplitude_corr",
     "resp_ibi_corr",
 ]
-
-
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def get_device() -> torch.device:
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    if torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-
-
-def choose_amp(device: torch.device, disable_amp: bool = False) -> tuple[bool, str]:
-    if disable_amp:
-        return False, device.type if device.type in {"cuda", "cpu", "mps"} else "cpu"
-    if device.type == "cuda":
-        return True, "cuda"
-    return False, "cpu"
-
-
-def format_duration(seconds: float) -> str:
-    total_seconds = max(int(round(seconds)), 0)
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    if hours:
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    return f"{minutes:02d}:{secs:02d}"
-
-
-@dataclass
-class FeatureStats:
-    medians: np.ndarray
-    means: np.ndarray
-    stds: np.ndarray
-
-
-def stats_to_jsonable(stats: FeatureStats) -> dict[str, list[float]]:
-    return {
-        "medians": stats.medians.tolist(),
-        "means": stats.means.tolist(),
-        "stds": stats.stds.tolist(),
-    }
-
-
-class PPGAugment:
-    def __init__(self, signal_length: int):
-        self.signal_length = signal_length
-
-    def __call__(self, signal_values: np.ndarray) -> np.ndarray:
-        x = signal_values.astype(np.float32).copy()
-
-        if np.random.rand() < 0.9:
-            x *= np.random.uniform(0.90, 1.10)
-
-        if np.random.rand() < 0.8:
-            x += np.random.normal(0.0, np.random.uniform(0.005, 0.03), size=x.shape).astype(np.float32)
-
-        if np.random.rand() < 0.5:
-            shift = np.random.randint(-32, 33)
-            x = np.roll(x, shift)
-
-        if np.random.rand() < 0.4:
-            t = np.linspace(0.0, 1.0, x.size, dtype=np.float32)
-            drift = np.sin(2.0 * np.pi * np.random.uniform(0.2, 1.2) * t + np.random.uniform(0, 2 * np.pi))
-            x += drift.astype(np.float32) * np.random.uniform(0.01, 0.05)
-
-        if np.random.rand() < 0.3:
-            mask_len = np.random.randint(self.signal_length // 80, self.signal_length // 20)
-            start = np.random.randint(0, self.signal_length - mask_len)
-            x[start : start + mask_len] = float(np.mean(x))
-
-        return x
-
-
-class PhysioDataset(Dataset):
-    def __init__(
-        self,
-        ppg_waveforms: np.ndarray,
-        ppg_ibi: np.ndarray,
-        student_features: np.ndarray,
-        ecg_waveforms: np.ndarray,
-        ecg_ibi: np.ndarray,
-        resp_waveforms: np.ndarray,
-        teacher_features: np.ndarray,
-        aux_targets: np.ndarray,
-        aux_mask: np.ndarray,
-        labels: np.ndarray,
-        quality_scores: np.ndarray,
-        record_ids: np.ndarray,
-        group_ids: np.ndarray,
-        augment: PPGAugment | None = None,
-    ):
-        self.ppg_waveforms = ppg_waveforms.astype(np.float32)
-        self.ppg_ibi = ppg_ibi.astype(np.float32)
-        self.student_features = student_features.astype(np.float32)
-        self.ecg_waveforms = ecg_waveforms.astype(np.float32)
-        self.ecg_ibi = ecg_ibi.astype(np.float32)
-        self.resp_waveforms = resp_waveforms.astype(np.float32)
-        self.teacher_features = teacher_features.astype(np.float32)
-        self.aux_targets = aux_targets.astype(np.float32)
-        self.aux_mask = aux_mask.astype(bool)
-        self.labels = labels.astype(np.float32)
-        self.quality_scores = quality_scores.astype(np.float32)
-        self.record_ids = record_ids
-        self.group_ids = group_ids
-        self.augment = augment
-
-    def __len__(self) -> int:
-        return self.ppg_waveforms.shape[0]
-
-    def __getitem__(self, index: int) -> dict[str, Any]:
-        waveform = self.ppg_waveforms[index]
-        if self.augment is not None:
-            waveform = self.augment(waveform)
-        return {
-            "ppg_waveform": torch.from_numpy(waveform),
-            "ppg_ibi": torch.from_numpy(self.ppg_ibi[index]),
-            "student_features": torch.from_numpy(self.student_features[index]),
-            "ecg_waveform": torch.from_numpy(self.ecg_waveforms[index]),
-            "ecg_ibi": torch.from_numpy(self.ecg_ibi[index]),
-            "resp_waveform": torch.from_numpy(self.resp_waveforms[index]),
-            "teacher_features": torch.from_numpy(self.teacher_features[index]),
-            "aux_targets": torch.from_numpy(self.aux_targets[index]),
-            "aux_mask": torch.from_numpy(self.aux_mask[index]),
-            "label": torch.tensor(self.labels[index], dtype=torch.float32),
-            "quality_score": torch.tensor(self.quality_scores[index], dtype=torch.float32),
-            "record_id": self.record_ids[index],
-            "group_id": self.group_ids[index],
-        }
-
-
-def _allocate_group_counts(block_sizes: list[int], total_target: int) -> list[int]:
-    if total_target <= 0 or not block_sizes:
-        return [0] * len(block_sizes)
-
-    total_available = sum(block_sizes)
-    if total_target >= total_available:
-        return block_sizes.copy()
-
-    raw_counts = [total_target * size / total_available for size in block_sizes]
-    base_counts = [min(size, int(math.floor(raw))) for size, raw in zip(block_sizes, raw_counts)]
-    remainder = total_target - sum(base_counts)
-
-    order = sorted(
-        range(len(block_sizes)),
-        key=lambda index: (raw_counts[index] - base_counts[index], block_sizes[index]),
-        reverse=True,
-    )
-    for index in order:
-        if remainder <= 0:
-            break
-        if base_counts[index] < block_sizes[index]:
-            base_counts[index] += 1
-            remainder -= 1
-    return base_counts
-
-
-def choose_split_group_column(summary_df: pd.DataFrame, requested: str) -> str:
-    if requested != "auto":
-        if requested not in summary_df.columns:
-            raise ValueError(f"Requested split group column '{requested}' is not present in the summary CSV.")
-        return requested
-
-    if "subject_id" in summary_df.columns and "record_id" in summary_df.columns:
-        if int(summary_df.groupby("record_id")["label"].nunique().max()) > 1:
-            return "subject_id"
-    if "record_id" in summary_df.columns:
-        return "record_id"
-    if "subject_id" in summary_df.columns:
-        return "subject_id"
-    raise ValueError("Unable to auto-select a split grouping column because neither record_id nor subject_id exists.")
-
-
-def stratified_group_split(
-    summary_df: pd.DataFrame,
-    group_column: str,
-    val_group_count: int = 5,
-    test_group_count: int = 5,
-    seed: int = 42,
-) -> dict[str, list[str]]:
-    group_summary = (
-        summary_df.groupby(group_column, as_index=False)
-        .agg(
-            positive_rate=("label", "mean"),
-            positive_count=("label", "sum"),
-            segment_count=("label", "size"),
-        )
-        .sort_values(group_column)
-        .reset_index(drop=True)
-    )
-    total_groups = int(group_summary.shape[0])
-    if total_groups < 3:
-        raise ValueError(f"Need at least 3 unique groups in '{group_column}' to create train/val/test splits.")
-    if val_group_count + test_group_count >= total_groups:
-        raise ValueError(
-            f"Requested val/test group counts ({val_group_count}+{test_group_count}) leave no groups for training."
-        )
-
-    if group_summary["positive_rate"].nunique() <= 1:
-        group_summary["stratum"] = 0
-    else:
-        group_summary["stratum"] = pd.qcut(
-            group_summary["positive_rate"].rank(method="first"),
-            q=min(5, total_groups),
-            labels=False,
-            duplicates="drop",
-        )
-
-    blocks = [block[group_column].astype(str).tolist() for _, block in group_summary.groupby("stratum", sort=True)]
-    rng = random.Random(seed)
-    for block in blocks:
-        rng.shuffle(block)
-
-    test_counts = _allocate_group_counts([len(block) for block in blocks], test_group_count)
-    remaining_sizes = [len(block) - test_count for block, test_count in zip(blocks, test_counts)]
-    val_counts = _allocate_group_counts(remaining_sizes, val_group_count)
-
-    train_groups: list[str] = []
-    val_groups: list[str] = []
-    test_groups: list[str] = []
-    for block, test_count, val_count in zip(blocks, test_counts, val_counts):
-        test_groups.extend(block[:test_count])
-        val_groups.extend(block[test_count : test_count + val_count])
-        train_groups.extend(block[test_count + val_count :])
-
-    return {
-        "train": sorted(train_groups),
-        "val": sorted(val_groups),
-        "test": sorted(test_groups),
-    }
-
-
-def create_split_masks(
-    summary_df: pd.DataFrame,
-    split_groups: dict[str, list[str]],
-    group_column: str,
-) -> dict[str, np.ndarray]:
-    group_values = summary_df[group_column].astype(str)
-    return {
-        split_name: group_values.isin(groups).to_numpy()
-        for split_name, groups in split_groups.items()
-    }
-
-
-def fill_and_scale_columns(
-    summary_df: pd.DataFrame,
-    columns: list[str],
-    split_masks: dict[str, np.ndarray],
-) -> tuple[pd.DataFrame, FeatureStats]:
-    features = summary_df[columns].copy()
-    train_features = features.loc[split_masks["train"]]
-    medians = train_features.median(axis=0).to_numpy(dtype=np.float32)
-    features = features.fillna(dict(zip(columns, medians)))
-
-    train_filled = features.loc[split_masks["train"]]
-    means = train_filled.mean(axis=0).to_numpy(dtype=np.float32)
-    stds = train_filled.std(axis=0).replace(0.0, 1.0).to_numpy(dtype=np.float32)
-    features = (features - means) / stds
-
-    scaled_df = summary_df.copy()
-    scaled_df[columns] = features
-    return scaled_df, FeatureStats(medians=medians, means=means, stds=stds)
-
-
-def prepare_aux_targets(
-    summary_df: pd.DataFrame,
-    split_masks: dict[str, np.ndarray],
-) -> tuple[pd.DataFrame, FeatureStats]:
-    targets = summary_df[AUX_TARGET_COLUMNS].copy()
-    train_targets = targets.loc[split_masks["train"]]
-    medians = train_targets.median(axis=0).to_numpy(dtype=np.float32)
-    mask = targets.notna().to_numpy(dtype=bool)
-    targets = targets.fillna(dict(zip(AUX_TARGET_COLUMNS, medians)))
-
-    train_filled = targets.loc[split_masks["train"]]
-    means = train_filled.mean(axis=0).to_numpy(dtype=np.float32)
-    stds = train_filled.std(axis=0).replace(0.0, 1.0).to_numpy(dtype=np.float32)
-    targets = (targets - means) / stds
-
-    normalized_df = summary_df.copy()
-    normalized_df[AUX_TARGET_COLUMNS] = targets
-    normalized_df[[f"{column}_valid" for column in AUX_TARGET_COLUMNS]] = mask
-    return normalized_df, FeatureStats(medians=medians, means=means, stds=stds)
-
-
-def _safe_probability_metric(metric_name: str, y_true: np.ndarray, y_prob: np.ndarray) -> float:
-    if np.unique(y_true).size < 2:
-        return 0.0
-    try:
-        if metric_name == "auroc":
-            return float(roc_auc_score(y_true, y_prob))
-        if metric_name == "auprc":
-            return float(average_precision_score(y_true, y_prob))
-    except ValueError:
-        return 0.0
-    raise ValueError(f"Unsupported metric name: {metric_name}")
-
-
-def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> dict[str, float]:
-    y_prob = np.nan_to_num(y_prob, nan=0.5, posinf=1.0, neginf=0.0)
-    y_pred = (y_prob >= threshold).astype(np.int64)
-    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-
-    sensitivity = tp / (tp + fn) if (tp + fn) else 0.0
-    specificity = tn / (tn + fp) if (tn + fp) else 0.0
-    precision = tp / (tp + fp) if (tp + fp) else 0.0
-    accuracy = (tp + tn) / max(tp + tn + fp + fn, 1)
-
-    return {
-        "accuracy": float(accuracy),
-        "sensitivity": float(sensitivity),
-        "specificity": float(specificity),
-        "precision": float(precision),
-        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
-        "auroc": _safe_probability_metric("auroc", y_true, y_prob),
-        "auprc": _safe_probability_metric("auprc", y_true, y_prob),
-    }
-
-
-def find_best_threshold(
-    y_true: np.ndarray,
-    y_prob: np.ndarray,
-    objective: str = "balanced_accuracy",
-) -> float:
-    y_prob = np.nan_to_num(y_prob, nan=0.5, posinf=1.0, neginf=0.0)
-    candidate_thresholds = np.linspace(0.1, 0.9, 81)
-    best_threshold = 0.5
-    best_score = -1.0
-    for threshold in candidate_thresholds:
-        y_pred = (y_prob >= threshold).astype(np.int64)
-        tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
-        sensitivity = tp / (tp + fn) if (tp + fn) else 0.0
-        specificity = tn / (tn + fp) if (tn + fp) else 0.0
-        if objective == "f1":
-            score = float(f1_score(y_true, y_pred, zero_division=0))
-        elif objective == "balanced_accuracy":
-            score = sensitivity + specificity
-        else:
-            raise ValueError(f"Unsupported threshold objective: {objective}")
-        if score > best_score:
-            best_score = score
-            best_threshold = float(threshold)
-    return best_threshold
-
-
 def summarize_by_group(group_ids: np.ndarray, labels: np.ndarray, probs: np.ndarray) -> pd.DataFrame:
     frame = pd.DataFrame({"group_id": group_ids, "label": labels, "prob": probs})
     return frame.groupby("group_id", as_index=False).agg(label=("label", "first"), prob=("prob", "mean"))
-
-
-class DistillationLoss(nn.Module):
-    def __init__(
-        self,
-        pos_weight: float,
-        alpha_teacher: float = 0.35,
-        alpha_distill: float = 0.20,
-        alpha_aux: float = 0.15,
-        gamma: float = 1.5,
-        label_smoothing: float = 0.02,
-    ):
-        super().__init__()
-        self.register_buffer("pos_weight", torch.tensor([pos_weight], dtype=torch.float32))
-        self.alpha_teacher = alpha_teacher
-        self.alpha_distill = alpha_distill
-        self.alpha_aux = alpha_aux
-        self.gamma = gamma
-        self.label_smoothing = label_smoothing
-        self.aux_loss = nn.SmoothL1Loss(reduction="none")
-
-    def _student_classification_loss(
-        self,
-        logits: torch.Tensor,
-        targets: torch.Tensor,
-        quality_scores: torch.Tensor,
-    ) -> torch.Tensor:
-        quality_scores = quality_scores.clamp(0.0, 1.0)
-        smooth_targets = targets * (1.0 - self.label_smoothing) + 0.5 * self.label_smoothing
-        bce = F.binary_cross_entropy_with_logits(
-            logits,
-            smooth_targets,
-            reduction="none",
-            pos_weight=self.pos_weight.to(logits.device),
-        )
-        pt = torch.exp(-bce)
-        focal = ((1.0 - pt) ** self.gamma) * bce
-        sample_weights = 0.6 + 0.4 * quality_scores
-        return (focal * sample_weights).mean()
-
-    def forward(
-        self,
-        outputs: dict[str, torch.Tensor],
-        labels: torch.Tensor,
-        quality_scores: torch.Tensor,
-        aux_targets: torch.Tensor,
-        aux_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, dict[str, float]]:
-        student_cls = self._student_classification_loss(outputs["student_logit"], labels, quality_scores)
-        teacher_cls = F.binary_cross_entropy_with_logits(
-            outputs["teacher_logit"],
-            labels,
-            pos_weight=self.pos_weight.to(outputs["teacher_logit"].device),
-        )
-
-        student_embedding = F.normalize(outputs["student_embedding"], dim=1)
-        teacher_embedding = F.normalize(outputs["teacher_embedding"].detach(), dim=1)
-        distill = 1.0 - F.cosine_similarity(student_embedding, teacher_embedding, dim=1).mean()
-
-        aux_residual = self.aux_loss(outputs["aux_prediction"], aux_targets)
-        aux_mask = aux_mask.to(aux_residual.dtype)
-        aux = (aux_residual * aux_mask).sum() / aux_mask.sum().clamp(min=1.0)
-
-        total = student_cls + self.alpha_teacher * teacher_cls + self.alpha_distill * distill + self.alpha_aux * aux
-        loss_parts = {
-            "student_cls": float(student_cls.detach().item()),
-            "teacher_cls": float(teacher_cls.detach().item()),
-            "distill": float(distill.detach().item()),
-            "aux": float(aux.detach().item()),
-        }
-        return total, loss_parts
-
-
 def evaluate_model(
     model: nn.Module,
     dataloader: DataLoader,
@@ -601,6 +193,7 @@ def run_training_epoch(
         if not math.isfinite(float(grad_norm)):
             skipped_nonfinite_batches += 1
             optimizer.zero_grad(set_to_none=True)
+            scaler.update()
             continue
         scaler.step(optimizer)
         scaler.update()
@@ -658,7 +251,7 @@ def prepare_dataloaders(
             record_ids=summary_df.loc[mask, "record_id"].to_numpy(),
             group_ids=summary_df.loc[mask, group_column].astype(str).to_numpy(),
             augment=(
-                PPGAugment(arrays["ppg_segments"].shape[1])
+                PPGAugment(arrays["ppg_segments"].shape[1], enable_time_warp=False)
                 if split_name == "train" and not disable_train_augment
                 else None
             ),
@@ -690,10 +283,6 @@ def prepare_dataloaders(
     return loaders, label_arrays
 
 
-def save_json(payload: dict[str, Any], path: Path) -> None:
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-
 def load_ssl_pretrained_encoders(model: PhysiologyAwareDistillationNet, checkpoint_path: Path) -> dict[str, Any]:
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     loaded: dict[str, Any] = {"checkpoint_path": str(checkpoint_path)}
@@ -715,45 +304,6 @@ def load_ssl_pretrained_encoders(model: PhysiologyAwareDistillationNet, checkpoi
         loaded["teacher_ecg_unexpected"] = list(teacher_load.unexpected_keys)
 
     return loaded
-
-
-def load_and_concat_multimodal_datasets(
-    segments_paths: list[Path],
-    summary_paths: list[Path],
-) -> tuple[dict[str, np.ndarray], pd.DataFrame]:
-    if len(segments_paths) != len(summary_paths):
-        raise ValueError("--segments-path and --summary-path must be provided the same number of times.")
-
-    array_blocks: dict[str, list[np.ndarray]] = {}
-    summary_blocks = []
-    expected_lengths: dict[str, tuple[int, ...]] = {}
-
-    for segments_path, summary_path in zip(segments_paths, summary_paths):
-        arrays = dict(np.load(segments_path))
-        summary_df = pd.read_csv(summary_path)
-        row_count = summary_df.shape[0]
-        if arrays["ppg_segments"].shape[0] != row_count:
-            raise ValueError(
-                f"Accepted multimodal NPZ and summary CSV row counts do not match for {segments_path} and {summary_path}."
-            )
-
-        for key, values in arrays.items():
-            if values.ndim >= 2 and values.shape[0] == row_count:
-                trailing_shape = values.shape[1:]
-                if key not in expected_lengths:
-                    expected_lengths[key] = trailing_shape
-                elif expected_lengths[key] != trailing_shape:
-                    raise ValueError(
-                        f"All multimodal datasets must agree on shape for {key}. "
-                        f"Expected {expected_lengths[key]}, got {trailing_shape} from {segments_path}."
-                    )
-            array_blocks.setdefault(key, []).append(values)
-        summary_blocks.append(summary_df)
-
-    merged_arrays = {key: np.concatenate(value_list, axis=0) for key, value_list in array_blocks.items()}
-    return merged_arrays, pd.concat(summary_blocks, ignore_index=True)
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train a physiology-aware multimodal distillation model with PPG-only inference."
@@ -785,6 +335,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--val-records", type=int, default=5)
     parser.add_argument("--test-records", type=int, default=5)
+    parser.add_argument(
+        "--split-mode",
+        choices=("group", "metadata_folds"),
+        default="group",
+        help="Use a fresh stratified group split or the strat_fold metadata from the summary CSV.",
+    )
+    parser.add_argument(
+        "--train-folds",
+        default="0,1,2,3,4,5,6,7",
+        help="Comma-separated folds for training when --split-mode metadata_folds is used.",
+    )
+    parser.add_argument(
+        "--val-folds",
+        default="8",
+        help="Comma-separated folds for validation when --split-mode metadata_folds is used.",
+    )
+    parser.add_argument(
+        "--test-folds",
+        default="9",
+        help="Comma-separated folds for testing when --split-mode metadata_folds is used.",
+    )
     parser.add_argument(
         "--split-group-column",
         default="auto",
@@ -834,19 +405,28 @@ def main() -> None:
     arrays, summary_df = load_and_concat_multimodal_datasets(args.segments_path, args.summary_path)
 
     split_group_column = choose_split_group_column(summary_df, args.split_group_column)
-    split_groups = stratified_group_split(
-        summary_df=summary_df,
-        group_column=split_group_column,
-        val_group_count=args.val_records,
-        test_group_count=args.test_records,
-        seed=args.seed,
-    )
-    split_masks = create_split_masks(summary_df, split_groups, group_column=split_group_column)
+    if args.split_mode == "metadata_folds":
+        split_masks, split_groups = create_metadata_fold_split_masks(
+            summary_df=summary_df,
+            train_folds=_parse_fold_list(args.train_folds),
+            val_folds=_parse_fold_list(args.val_folds),
+            test_folds=_parse_fold_list(args.test_folds),
+        )
+        validate_split_masks(summary_df, split_masks)
+    else:
+        split_groups = stratified_group_split(
+            summary_df=summary_df,
+            group_column=split_group_column,
+            val_group_count=args.val_records,
+            test_group_count=args.test_records,
+            seed=args.seed,
+        )
+        split_masks = create_split_masks(summary_df, split_groups, group_column=split_group_column)
     grouped_metrics_supported = bool((summary_df.groupby(split_group_column)["label"].nunique() <= 1).all())
 
     summary_df, student_stats = fill_and_scale_columns(summary_df, STUDENT_FEATURE_COLUMNS, split_masks)
     summary_df, teacher_stats = fill_and_scale_columns(summary_df, TEACHER_FEATURE_COLUMNS, split_masks)
-    summary_df, aux_stats = prepare_aux_targets(summary_df, split_masks)
+    summary_df, aux_stats = prepare_aux_targets(summary_df, AUX_TARGET_COLUMNS, split_masks)
 
     loaders, label_arrays = prepare_dataloaders(
         arrays,

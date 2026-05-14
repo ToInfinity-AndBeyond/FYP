@@ -24,6 +24,29 @@ from train_ppg_hybrid import (
 )
 
 
+def model_config_from_checkpoint(checkpoint: dict[str, object], signal_length: int) -> dict[str, object]:
+    feature_columns = list(checkpoint["feature_columns"])
+    raw_config = checkpoint.get("model_config")
+    if isinstance(raw_config, dict):
+        sqi_condition_indices = raw_config.get("sqi_condition_indices", [])
+        if sqi_condition_indices is None and raw_config.get("sqi_condition_columns"):
+            sqi_condition_indices = [
+                feature_columns.index(column)
+                for column in raw_config["sqi_condition_columns"]
+                if column in feature_columns
+            ]
+        return {
+            "feature_dim": int(raw_config.get("feature_dim", len(feature_columns))),
+            "signal_length": int(raw_config.get("signal_length", signal_length)),
+            "sqi_condition_indices": list(sqi_condition_indices or []),
+        }
+    return {
+        "feature_dim": len(feature_columns),
+        "signal_length": signal_length,
+        "sqi_condition_indices": [],
+    }
+
+
 def _parse_fold_list(text: str) -> list[int]:
     values = []
     for part in text.split(","):
@@ -113,10 +136,8 @@ def main() -> None:
     test_loader = build_loader(signals, summary_df, raw_quality_scores, split_masks["test"], args.batch_size)
 
     device = get_device()
-    model = RhythmMorphologyFusionNet(
-        feature_dim=len(checkpoint["feature_columns"]),
-        signal_length=signals.shape[1],
-    ).to(device)
+    model_config = model_config_from_checkpoint(checkpoint, signal_length=signals.shape[1])
+    model = RhythmMorphologyFusionNet(**model_config).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
     val_y, val_prob, val_records = evaluate_model(model, val_loader, device=device, tta_shifts=(0, -8, 8))

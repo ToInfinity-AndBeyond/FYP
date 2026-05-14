@@ -1,0 +1,77 @@
+{
+  "analysis_dir": "/homes/mc1920/FYP/Atrial-Fibrillation-ML-main/analysis/final_paper_evidence",
+  "coverage_paths": {
+    "coverage_by_split": "Atrial-Fibrillation-ML-main/analysis/final_paper_evidence/sqi_coverage_by_split.csv",
+    "coverage_by_prefix": "Atrial-Fibrillation-ML-main/analysis/final_paper_evidence/sqi_coverage_by_prefix.csv",
+    "coverage_by_split_prefix": "Atrial-Fibrillation-ML-main/analysis/final_paper_evidence/sqi_coverage_by_split_prefix.csv"
+  },
+  "prediction_paths": {
+    "record_level_bootstrap_ci": "Atrial-Fibrillation-ML-main/analysis/final_paper_evidence/record_level_bootstrap_ci.csv",
+    "prefix_reliability_summary": "Atrial-Fibrillation-ML-main/analysis/final_paper_evidence/prefix_reliability_summary.csv"
+  },
+  "feature_baselines": {
+    "feature_logistic_regression": {
+      "model": "feature_logistic_regression",
+      "val_selected_record_threshold": 0.763,
+      "segment_val": {
+        "accuracy": 0.9606545064377683,
+        "sensitivity": 0.840363462458154,
+        "specificity": 0.9758535258928032,
+        "precision": 0.8147255192878339,
+        "f1": 0.827345920241066,
+        "auroc": 0.9364599420546071,
+        "auprc": 0.8319362991723345,
+        "tn": 80747,
+        "fp": 1998,
+        "fn": 1669,
+        "tp": 8786
+      },
+      "segment_test": {
+        "accuracy": 0.9434442820949343,
+        "sensitivity": 0.8966232227488151,
+        "specificity": 0.9481038218344215,
+        "precision": 0.6322715404699739,
+        "f1": 0.7415936791817236,
+        "auroc": 0.9541939376840154,
+        "auprc": 0.7683142289872696,
+        "tn": 64326,
+        "fp": 3521,
+        "fn": 698,
+        "tp": 6054
+      },
+      "record_val": {
+        "accuracy": 0.9669104841518634,
+        "sensitivity": 0.8769574944071589,
+        "specificity": 0.9834983498349835,
+        "precision": 0.9074074074074074,
+        "f1": 0.8919226393629125,
+        "auroc": 0.9590423597728901,
+        "auprc": 0.9154597808625283,
+        "tn": 4768,
+        "fp": 80,
+        "fn": 110,
+        "tp": 784
+      },
+      "record_test": {
+        "accuracy": 0.937370307489153,
+        "sensitivity": 0.8430232558139535,
+        "specificity": 0.9514415781487102,
+        "precision": 0.7213930348258707,
+        "f1": 0.7774798927613941,
+        "auroc": 0.9542382750467586,
+        "auprc": 0.8142174542278875,
+        "tn": 4389,
+        "fp": 224,
+        "fn": 108,
+        "tp": 580
+      },
+      "counts": {
+        "train_segments": 622065,
+        "val_segments": 93200,
+        "test_segments": 74599,
+        "val_records": 5742,
+        "test_records": 5301
+      }
+    }
+  }
+}

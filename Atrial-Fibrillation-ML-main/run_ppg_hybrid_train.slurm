@@ -1,20 +1,20 @@
 #!/bin/bash
 #SBATCH --job-name=ppg_hybrid_train
-#SBATCH --gres=gpu:nvidia_a30:1
+#SBATCH --gres=gpu:1
 #SBATCH --partition=a30
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=32G
 #SBATCH --time=12:00:00
-#SBATCH --output=slurm_logs/ppg_hybrid_%j.out
+#SBATCH --output=slurm-%x-%j.out
 
 set -euo pipefail
 
-PROJECT_DIR="/homes/mc1920/FYP/Atrial-Fibrillation-ML-main"
-VENV_PATH="/vol/bitbucket/${USER}/myvenv"
-STARTER_VENV="/vol/bitbucket/starter"
-SEGMENTS_PATH="${PROJECT_DIR}/artifacts/zenodo10_full/signal_pipeline/ppg/ppg_accepted_segments.npz"
-SUMMARY_PATH="${PROJECT_DIR}/artifacts/zenodo10_full/signal_pipeline/ppg/ppg_accepted_segment_summary.csv"
-OUTPUT_DIR="${PROJECT_DIR}/artifacts/experiments/ppg_hybrid_zenodo10_full"
+PROJECT_DIR="${PROJECT_DIR:-/homes/mc1920/FYP/Atrial-Fibrillation-ML-main}"
+VENV_PATH="${VENV_PATH:-/vol/bitbucket/${USER}/myvenv}"
+STARTER_VENV="${STARTER_VENV:-/vol/bitbucket/starter}"
+SEGMENTS_PATH="${SEGMENTS_PATH:-${PROJECT_DIR}/artifacts/zenodo10_full/signal_pipeline/ppg/ppg_accepted_segments.npz}"
+SUMMARY_PATH="${SUMMARY_PATH:-${PROJECT_DIR}/artifacts/zenodo10_full/signal_pipeline/ppg/ppg_accepted_segment_summary.csv}"
+OUTPUT_DIR="${OUTPUT_DIR:-${PROJECT_DIR}/artifacts/experiments/ppg_hybrid_zenodo10_full}"
 
 mkdir -p "${PROJECT_DIR}/slurm_logs"
 mkdir -p "${OUTPUT_DIR}"
