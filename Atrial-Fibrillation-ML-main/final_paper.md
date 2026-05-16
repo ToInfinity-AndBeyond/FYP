@@ -1,4 +1,4 @@
-# PPG-Based Atrial Fibrillation Detection with Signal Quality Assessment and Edge AI Deployment
+# PPG-Based Atrial Fibrillation Detection with Signal Quality Assessment, Comparative Deep Learning, and Edge AI Deployment
 
 **Author:** Minseok Chey  
 **Supervisor:** Dr. Pancham Shukla  
@@ -16,13 +16,17 @@ I would also like to thank Dr. Aakash Soni, my industry supervisor, for his advi
 
 Atrial fibrillation (AF) is the most common sustained cardiac arrhythmia and is associated with increased risk of stroke, heart failure, and mortality. Electrocardiography (ECG) remains the clinical diagnostic standard, but intermittent ECG can miss asymptomatic or paroxysmal episodes. Photoplethysmography (PPG) offers a scalable route for continuous rhythm screening, but it is an indirect optical measurement of peripheral blood volume and is sensitive to motion artefacts, low perfusion, poor contact, and non-AF irregular rhythms.
 
-This project develops a PPG-only AF screening pipeline combining 30-second preprocessing, explicit signal quality assessment (SQI), hybrid waveform/spectral/feature modelling, and quality-weighted record-event-level aggregation. PPG segments are band-pass filtered, z-score normalised, and converted into pulse timing, morphology, rhythm, and quality features. The main research classifier, `RhythmMorphologyFusionNet`, combines time-domain waveform morphology, log-magnitude STFT evidence, and a 17-feature rhythm/quality vector using gated fusion. Unreliable windows are rejected using an SQI gate, so performance is interpreted together with accepted-window coverage.
+This project develops and evaluates a signal-quality-aware PPG AF screening pipeline on 30-second windows from MIMIC PERform AF and the p00-p02 subset of MIMIC-III-Ext-PPG v1.1.0. The common signal-processing foundation consists of band-pass filtering, z-score normalisation, pulse-peak detection, rhythm and morphology feature extraction, explicit signal quality assessment (SQI), and record-level aggregation. On top of this foundation, the thesis evaluates a reference gated-fusion model and five complementary strategy families for improving PPG-based AF screening.
 
-MIMIC PERform AF is used only as a small controlled sanity check, while the main evaluation uses the p00-p02 subset of MIMIC-III-Ext-PPG v1.1.0. After SQI filtering, the p00-p02 binary AF-versus-sinus-rhythm subset contains 789,864 accepted segments and 52,419 record-event groups. The final model achieved record-event-level test accuracy 0.9536, sensitivity 0.8241, specificity 0.9729, precision 0.8194, F1 0.8217, AUROC 0.9272, and AUPRC 0.8365 at a validation-selected threshold. Segment-level precision was lower at 0.6841, supporting aggregation rather than single-window alerting. Additional analyses show high SQI acceptance on the evaluated subset, modest benefit from SQI filtering in a feature-level ablation, modest improvement from quality-weighted aggregation over unweighted averaging, and a neural branch ablation in which waveform-only retraining was competitive with full fusion. The retained hybrid checkpoint provides a strong precision-oriented operating point, but the ablation evidence does not establish stable superiority of gated multi-branch fusion. A compact 17-feature Nordic Edge AI model was also integrated into Zephyr firmware as a deployment-path smoke test, not as a reproduction of the full hybrid waveform/STFT model. These results support retrospective feasibility for SQI-aware PPG AF screening on the evaluated p00-p02 scope, while broader full-release, multi-rhythm, continuous-coverage, hardware, and prospective validation remain necessary before clinical use.
+The reference model, `RhythmMorphologyFusionNet`, combines time-domain waveform morphology, log-magnitude STFT evidence, and a 17-feature rhythm/quality vector using SQI-conditioned gated fusion. The five comparative strategies are: `QA-BeatFormer`, a beat-aware Transformer that represents each PPG segment through beat-level morphology, rhythm, and SQI tokens; `PrecisionGuard-MIL`, a record-level verifier that uses multiple segment classifiers, SQI, and rhythm summaries to reduce false positives; ECG-supervised PPG distillation, where paired ECG-derived rhythm information is used during training while inference remains PPG-only; self-supervised PPG pretraining followed by supervised fine-tuning; and calibration with selective classification, which introduces an explicit high-confidence automatic-decision mode and an inconclusive state.
+
+MIMIC PERform AF is used as a small controlled sanity check, while the main large-scale evaluation uses MIMIC-III-Ext-PPG p00-p02. After SQI filtering, the binary AF-versus-sinus-rhythm p00-p02 subset contains 789,864 accepted segments and 52,419 record-event groups. The reference SQI-conditioned gated-fusion model achieved record-event-level test accuracy 0.9536, sensitivity 0.8241, specificity 0.9729, precision 0.8194, F1 0.8217, AUROC 0.9272, and AUPRC 0.8365 at a validation-selected threshold. Comparative results show that the strongest full-coverage record-level result was obtained by ECG-supervised PPG distillation with median aggregation, reaching F1 0.8740, precision 0.9209, sensitivity 0.8316, specificity 0.9819, AUROC 0.9705, and AUPRC 0.9344 on the held-out test fold. SSL-pretrained PPG fine-tuning achieved record-level F1 0.8289, AUROC 0.9651, and AUPRC 0.9358 under its validation-selected aggregation rule. Post-hoc selective classification further showed that a calibrated high-confidence operating mode can reach F1 0.8817 at 80% coverage and F1 0.9222 at 50% coverage, at the cost of abstaining on lower-confidence records.
+
+The results support three conclusions. First, PPG-only inference can provide useful retrospective AF-versus-SR screening evidence when signal quality, repeated-window aggregation, and decision thresholds are handled explicitly. Second, the strongest improvements are not produced by one architectural trick alone; they arise from complementary decisions about representation learning, training supervision, record-level verification, calibration, and abstention. Third, the most clinically relevant gains come from reducing false positives at the record level rather than simply increasing segment-level sensitivity. A compact 17-feature Nordic Edge AI model is also integrated into Zephyr firmware as an embedded deployment-path smoke test. The study remains retrospective, limited to p00-p02 and binary AF/SR evaluation, and requires full-release, multi-rhythm, external, hardware, and prospective ECG-confirmed validation before clinical use.
 
 ## Keywords
 
-Atrial fibrillation; photoplethysmography; signal quality index; deep learning; wearable screening; edge AI; MIMIC-III-Ext-PPG; MIMIC PERform AF.
+Atrial fibrillation; photoplethysmography; signal quality index; deep learning; self-supervised learning; ECG-supervised distillation; multiple-instance learning; calibration; selective classification; wearable screening; edge AI; MIMIC-III-Ext-PPG; MIMIC PERform AF.
 
 ## 1. Introduction
 
@@ -34,13 +38,17 @@ Electrocardiography (ECG) remains the diagnostic standard because it directly re
 
 Large wearable studies have shown that PPG-based irregular rhythm notifications can achieve high positive predictive value when alerts are issued conservatively [16-18]. At the same time, these studies reveal the central trade-off in PPG screening: to avoid false alarms, they often prioritise specificity by rejecting noisy data and requiring sustained irregularity, which can reduce sensitivity for shorter or lower-quality episodes. PPG is also an indirect measure of rhythm. Unlike ECG, it does not directly show atrial electrical activity, P-waves, PR intervals, or QRS morphology. Instead, AF must be inferred from irregular pulse timing, beat-to-beat variability, and pulse morphology. These cues can be informative, but they can also be distorted by motion artefact, poor sensor contact, low perfusion, vasoconstriction, skin and device effects, and ambient light leakage. Non-AF irregular rhythms such as premature atrial contractions, premature ventricular contractions, atrial flutter with variable block, or bigeminy-like patterns can also create irregular pulse intervals that resemble AF in PPG.
 
-This project addresses that challenge by studying a PPG-based AF screening pipeline built around explicit signal-quality handling, hybrid deep learning, record-event-level aggregation, and a compact deployment path for embedded inference. The work is organised around three research questions:
+This project addresses that challenge by studying a PPG-based AF screening pipeline built around explicit signal-quality handling, comparative deep learning, record-event-level aggregation, post-hoc decision calibration, and a compact deployment path for embedded inference. The work is organised around five research questions:
 
 **RQ1.** Can SQI-aware PPG processing achieve useful retrospective record-event AF-versus-SR screening performance on MIMIC-III-Ext-PPG p00-p02?
 
 **RQ2.** Does record-event-level aggregation improve practical screening behaviour compared with isolated 30-second segment predictions?
 
-**RQ3.** Can the project's 17-feature representation be connected to a feasible embedded inference path?
+**RQ3.** Does the reference SQI-conditioned gated-fusion model provide stable benefit over simpler waveform, spectral, and feature-based alternatives?
+
+**RQ4.** Which of five complementary strategy families, including beat-aware Transformers, record-level MIL verification, ECG-supervised PPG training, SSL pretraining, and calibration/selective classification, most improves the final screening operating point?
+
+**RQ5.** Can the project's 17-feature representation be connected to a feasible embedded inference path?
 
 This work is framed as screening rather than diagnosis. A positive PPG prediction should indicate likely AF and motivate confirmatory assessment, but it should not replace diagnostic ECG. The aim is therefore not to claim ECG-equivalent diagnosis from PPG, but to build and evaluate a robust, signal-quality-aware screening pipeline that can reduce false positives while preserving useful AF sensitivity.
 
@@ -60,10 +68,11 @@ The main contributions are:
 
 1. A staged experimental design using MIMIC PERform AF as a controlled baseline and MIMIC-III-Ext-PPG p00-p02 as the main large-scale benchmark.
 2. A 30-second PPG preprocessing pipeline with band-pass filtering, peak detection, rhythm feature extraction, and explicit SQI-based segment filtering.
-3. Implementation and evaluation of a hybrid deep learning model that combines raw waveform morphology, spectral content, and 17 hand-crafted rhythm/quality features, while explicitly testing whether the branches add stable value through neural branch ablation.
-4. A record-event-level aggregation strategy that converts segment probabilities into episode-level predictions using quality-weighted averaging, with an aggregation ablation against mean, median, maximum, and top-k pooling.
-5. Additional validation evidence including SQI coverage analysis, feature-level SQI ablation, neural branch ablation, a feature-only logistic baseline, prefix-level reliability analysis, and bootstrap confidence intervals for the main record-event-level metrics.
-6. A Nordic Edge AI deployment path using a compact 17-feature model integrated into an nRF9160/Zephyr firmware project with an embedded smoke-test harness, presented as feasibility evidence rather than as a reproduction of the full hybrid research model.
+3. Implementation and evaluation of `RhythmMorphologyFusionNet`, an SQI-conditioned gated-fusion model that combines raw waveform morphology, STFT spectral evidence, and 17 hand-crafted rhythm/quality features.
+4. A comparative model-development study of five complementary screening strategies: `QA-BeatFormer`, `PrecisionGuard-MIL`, ECG-supervised PPG distillation, SSL-pretrained PPG fine-tuning, and calibration/selective classification.
+5. A record-event-level aggregation strategy that converts segment probabilities into episode-level predictions using quality-weighted averaging, with an aggregation ablation against mean, median, maximum, top-k pooling, and later method-specific record-level aggregation.
+6. Supplementary validation evidence including SQI coverage analysis, feature-level SQI ablation, neural branch ablation, a feature-only logistic baseline, prefix-level reliability analysis, bootstrap confidence intervals, calibration analysis, high-confidence coverage/F1 curves, and post-hoc record-level comparisons for the strategy families.
+7. A Nordic Edge AI deployment path using a compact 17-feature model integrated into an nRF9160/Zephyr firmware project with an embedded smoke-test harness, presented as feasibility evidence rather than as a reproduction of the full hybrid research model.
 
 The datasets are intentionally reported separately. MIMIC PERform AF is used as a controlled baseline, while MIMIC-III-Ext-PPG is used as the main large-scale evaluation. The results are not presented as a single mixed-dataset training result because the datasets differ in scale, label provenance, patient context, and acquisition conditions. Combining them without a careful domain-adaptation study would make interpretation less clear rather than stronger.
 
@@ -73,11 +82,13 @@ The research questions are addressed by the following evidence:
 |---|---|
 | RQ1: SQI-aware AF-versus-SR screening | Sections 3-7: p00-p02 dataset definition, SQI coverage, final hybrid model metrics, CIs, and prefix analysis |
 | RQ2: record-event-level aggregation | Sections 6-7: segment-level versus record-event-level results and aggregation ablation |
-| RQ3: embedded inference path | Section 8: compact 17-feature Nordic Edge AI firmware integration and smoke-test harness |
+| RQ3: reference gated fusion versus simpler alternatives | Sections 5-7: neural branch ablation, feature logistic baseline, and comparison with QA-BeatFormer and SSL-pretrained PPG encoders |
+| RQ4: five complementary strategy families | Sections 2, 5, and 7: QA-BeatFormer, PrecisionGuard-MIL, ECG-supervised distillation, SSL pretraining/fine-tuning, and calibration/selective classification |
+| RQ5: embedded inference path | Section 8: compact 17-feature Nordic Edge AI firmware integration and smoke-test harness |
 
 ### 1.4 Report Structure
 
-The remainder of this report is organised as follows. Section 2 reviews the background and related work, focusing on clinical motivation, PPG signal characteristics, prior AF detection approaches, and the rationale for explicit signal-quality handling. Section 3 describes the datasets used in the project and clarifies why MIMIC PERform AF and MIMIC-III-Ext-PPG are treated separately. Section 4 presents the signal processing and feature extraction pipeline, including segmentation, filtering, peak detection, and SQI criteria. Section 5 describes the implemented hybrid model, training objective, and record-event-level aggregation strategy. Section 6 defines the evaluation protocol and metrics. Section 7 presents the experimental results, including record-event-level and segment-level analysis, threshold behaviour, and error analysis. Section 8 describes the embedded Edge AI integration. Sections 9 to 12 discuss the results, limitations, future work, and final conclusions.
+The remainder of this report is organised as follows. Section 2 reviews the background and related work, focusing on clinical motivation, PPG signal characteristics, prior AF detection approaches, signal-quality handling, beat-aware modelling, MIL, ECG-supervised learning, SSL, calibration, and selective classification. Section 3 describes the datasets used in the project and clarifies why MIMIC PERform AF and MIMIC-III-Ext-PPG are treated separately. Section 4 presents the signal processing and feature extraction pipeline, including segmentation, filtering, peak detection, and SQI criteria. Section 5 describes the reference gated-fusion model and the five comparative screening strategies. Section 6 defines the evaluation protocol and metrics. Section 7 presents the experimental results, including segment-level, record-event-level, record-level, calibration, selective-classification, and error analyses. Section 8 describes the embedded Edge AI integration. Sections 9 to 12 discuss the results, limitations, future work, and final conclusions.
 
 ## 2. Technical Background and Related Work
 
@@ -97,7 +108,7 @@ x[k] = x(k / f_s),    k = 0, 1, ..., T - 1
 
 where `f_s` is the sampling frequency and `T` is the number of samples in the recording. In ECG, AF can be recognised using electrical rhythm markers such as irregular R-R intervals and absence of consistent discernible P-waves. This is why ECG is the reference modality for clinical diagnosis and for rhythm labels in many benchmark datasets.
 
-In this project, ECG is not used as an input to the final classifier. The inference pipeline receives only PPG-derived inputs: the filtered PPG waveform, the log-magnitude spectrogram computed from that waveform, and a 17-feature rhythm/quality vector extracted from PPG. The rhythm reference in the main dataset consists of chart-event-derived clinical rhythm annotations linked to waveform windows, not per-window prospectively adjudicated ECG labels. This distinction is important. The project is therefore a PPG-based screening study using clinically documented rhythm annotations as reference information, not an ECG-and-PPG multimodal diagnostic model.
+In this project, ECG is not used as an input at inference time. The main inference pipeline receives only PPG-derived inputs: the filtered PPG waveform, the log-magnitude spectrogram computed from that waveform, and rhythm/quality features extracted from PPG. The ECG-supervised strategy uses paired ECG-derived information during training as teacher or auxiliary supervision, but the deployed student prediction still uses PPG only. This distinction is important: the project studies PPG-based screening, not an ECG-and-PPG multimodal diagnostic model. The rhythm reference in the main dataset consists of chart-event-derived clinical rhythm annotations linked to waveform windows, not per-window prospectively adjudicated ECG labels.
 
 ### 2.2 PPG as an Indirect Rhythm Signal
 
@@ -318,11 +329,62 @@ p_record_event = sum_i q_i * p_i / sum_i q_i
 
 where `p_i` is the model probability for segment `i` and `q_i` is its quality score. This converts 30-second predictions into a record-event-level decision and reduces the effect of isolated false-positive windows. This is closer to a practical wearable alerting system, where an alert should be supported by repeated evidence rather than one noisy window.
 
-### 2.9 Design Requirements for This Project
+### 2.9 Background for the Five Comparative Strategy Families
+
+The project evaluates five complementary strategy families on top of the same PPG signal-processing foundation. They are not all the same type of model. `QA-BeatFormer` is a new segment-level representation model, `PrecisionGuard-MIL` is a record-level verifier, ECG-supervised distillation is a training-supervision strategy, SSL pretraining is a representation-learning strategy, and calibration/selective classification is a decision-layer strategy. Treating them as complementary strategies rather than interchangeable neural architectures keeps the methodology coherent: each one targets a different weakness of PPG-based AF screening.
+
+#### 2.9.1 Beat-Aware Transformer Modelling
+
+AF is fundamentally a rhythm disorder, so a PPG model should be able to compare beats rather than only classify a fixed raw waveform tensor. A generic sample-level model receives a 30-second segment as 3750 samples and must learn pulse events implicitly. A beat-aware model first uses signal processing to identify pulse peaks, then represents the segment as a sequence of beat-centred tokens:
+
+```text
+PPG segment -> peak detection -> beat windows -> beat tokens -> sequence model
+```
+
+This has two advantages. First, the model's sequence length becomes the number of beats rather than the number of samples, which makes attention more data-efficient. Second, the representation matches the physiology of AF: beat morphology, inter-beat interval variability, and beat-to-beat inconsistency can be modelled directly. In this thesis, `QA-BeatFormer` uses this idea by combining beat waveform embeddings, local rhythm/SQI embeddings, and positional information before applying a Transformer encoder.
+
+#### 2.9.2 Multiple-Instance Learning and Record-Level Verification
+
+Multiple-instance learning (MIL) is well matched to record-level PPG screening [26]. In MIL terminology, a record is a bag and its 30-second segments are instances. The record-level label may be known even when each individual segment is noisy or not equally informative. A mean over segment probabilities assumes all segments are equally reliable, while a maximum is vulnerable to one isolated false-positive window. Attention-based MIL instead learns a weighted combination:
+
+```text
+h_i = encoder(z_i)
+a_i = softmax(v^T tanh(W h_i))
+h_record = sum_i a_i h_i
+p_record = sigmoid(classifier(h_record))
+```
+
+where `z_i` is a segment-level evidence vector. In this project, `z_i` includes stage-1 model probabilities, probability disagreement, SQI, morphology reliability, rhythm descriptors, and segment position. This design allows the verifier to down-weight low-quality or isolated high-risk segments and place more weight on clean, consistent AF evidence.
+
+#### 2.9.3 ECG-Supervised Privileged Training
+
+ECG-supervised PPG learning is included as a training-time strategy. Paired ECG provides a stronger rhythm reference than PPG peak timing, especially for R-peak intervals and irregularity. The student model still receives PPG-derived inputs at inference, but during training it is guided by ECG-derived teacher features and auxiliary targets such as ECG peak count, ECG IBI variability, PPG-ECG timing agreement, and respiratory coupling where available. This can be interpreted as privileged training: a stronger modality is available during model development, but not required during deployment.
+
+This distinction is central to the clinical framing. ECG-supervised distillation does not claim that the deployed model has ECG access. Instead, it tests whether ECG can teach a PPG-only student to distinguish true rhythm irregularity from optical artefact and AF-like non-AF pulse patterns.
+
+#### 2.9.4 Self-Supervised PPG Pretraining
+
+Self-supervised learning (SSL) is used to exploit the large amount of PPG waveform data before supervised AF fine-tuning. The implemented SSL experiment uses a SimCLR-style contrastive objective [28]. Two augmented views of the same PPG segment are treated as a positive pair, while views from different segments are negatives. The encoder is trained to map positive pairs close together and negatives apart:
+
+```text
+z_1 = projector(encoder(augment_1(x)))
+z_2 = projector(encoder(augment_2(x)))
+L_NT-Xent = contrastive_loss(z_1, z_2)
+```
+
+The motivation is that the encoder can learn general PPG morphology, rhythm regularity, and artefact-robust representations before seeing AF/SR labels. After pretraining, the projection head is discarded and the encoder is fine-tuned with a supervised AF classifier. SSL is therefore not a separate deployment modality; it is a representation-learning strategy for the same PPG-only inference problem.
+
+#### 2.9.5 Calibration and Selective Classification
+
+Calibration addresses a different problem. A classifier can rank examples well while still producing poorly calibrated probabilities [27]. For example, a predicted probability of 0.90 should ideally correspond to approximately 90% empirical positive frequency among similar examples. Miscalibration matters in screening because thresholds, risk communication, and selective no-call decisions all depend on the meaning of predicted probabilities. This project therefore evaluates post-hoc temperature scaling, Platt scaling, isotonic regression, and beta-style logistic calibration on validation predictions, then applies the selected calibration to test predictions. Calibration is assessed using Brier score, expected calibration error (ECE), reliability diagrams, and downstream F1 at validation-selected thresholds.
+
+Selective classification introduces an explicit abstention option. Instead of forcing an AF/SR decision for every record, the system can classify high-confidence records and mark lower-confidence records as inconclusive. This is appropriate for PPG because low-quality or ambiguous windows should often trigger repeat measurement or confirmatory ECG rather than an automatic diagnosis. In this project, confidence scores include probability margin, entropy, SQI-weighted margin, model disagreement, and within-record segment agreement. Coverage-F1 curves then report performance at 100%, 90%, 80%, 70%, and lower retained-record fractions.
+
+### 2.10 Design Requirements for This Project
 
 The technical background leads to the following design requirements. First, the classifier should use PPG-derived inputs only at inference time, while treating clinically documented rhythm annotations as retrospective reference labels rather than per-window diagnostic ECG adjudications. Second, the system should operate on short windows that contain enough beats for rhythm analysis; this motivates 30-second segments. Third, peak detection and rhythm features should be combined with morphology and spectral evidence because interval irregularity alone is not specific to AF. Fourth, SQI should be explicit so that unreliable windows can be rejected or down-weighted. Fifth, evaluation should emphasise record-event-level screening behaviour, sensitivity, specificity, precision, F1, AUROC, and AUPRC rather than accuracy alone.
 
-These requirements shape the rest of the report. Section 4 describes the implemented preprocessing, peak detection, SQI, and feature extraction. Section 5 describes the hybrid neural architecture and training objective. Section 6 explains why the primary evaluation is record-event-level. Section 7 then reports both segment-level and record-event-level results so that local classifier behaviour and practical screening behaviour can be interpreted separately.
+These requirements shape the rest of the report. Section 4 describes the implemented preprocessing, peak detection, SQI, and feature extraction. Section 5 describes the reference hybrid neural architecture and the five comparative strategy families. Section 6 explains why the primary evaluation is record-event-level and why some strategy families require separate record-level interpretation. Section 7 then reports both segment-level and record-level results so that local classifier behaviour, practical screening behaviour, and high-confidence selective decision rules can be interpreted separately.
 
 ## 3. Datasets
 
@@ -566,7 +628,7 @@ Missing feature values occur when a segment has too few detected intervals for a
 
 This implementation-level detail matters for the interpretation of the later model results. The neural network is not receiving a raw waveform in isolation. It receives a waveform whose reliability has already been assessed, a spectral view of that waveform, and a feature vector whose components correspond directly to the timing, morphology, spectral, and quality concepts introduced in Section 2.
 
-## 5. Deep Learning Model
+## 5. Model Development and Comparative Methods
 
 ### 5.1 Problem Formulation
 
@@ -583,6 +645,8 @@ p(AF | x, f) = sigmoid(z)
 ```
 
 The classification threshold is selected on the validation set and then fixed for the test set.
+
+Sections 5.2-5.12 describe the reference SQI-conditioned gated-fusion model. Sections 5.13-5.18 then define the five comparative strategy families evaluated on top of the same PPG signal-processing foundation: beat-aware Transformer modelling, record-level MIL verification, ECG-supervised PPG distillation, SSL pretraining/fine-tuning, and calibration with selective classification. This structure presents the later strategies as parallel design choices rather than as minor add-ons to the reference model.
 
 ### 5.2 Model Selection Rationale and Mathematical Background
 
@@ -923,6 +987,139 @@ threshold = 0.713
 
 This threshold is fixed before test evaluation. Test-set threshold sweeps are reported only as analysis and are not used as the primary result.
 
+### 5.13 Comparative Strategy Design
+
+The five strategy families were selected to target different parts of the PPG AF screening problem. PPG false positives can arise from noisy pulse trains, beat-detection errors, AF-like non-AF rhythms, poor probability calibration, and unstable record-level aggregation. A single larger backbone is unlikely to solve all of these. The comparative design therefore separates representation learning, record-level verification, training supervision, pretraining, and final decision policy:
+
+| Strategy | Hypothesis tested | Inference input |
+|---|---|---|
+| `QA-BeatFormer` | A physiologically structured beat-level representation may model AF rhythm irregularity better than an unstructured segment representation | PPG only |
+| `PrecisionGuard-MIL` | A record-level verifier can reduce false positives by checking whether high segment scores are consistent and high quality | PPG-derived model outputs and features |
+| ECG-supervised PPG distillation | ECG-derived rhythm supervision during training can reduce noisy PPG label learning while retaining PPG-only inference | PPG only at inference; ECG only during training |
+| SSL-pretrained PPG fine-tuning | Unlabelled PPG can teach a more robust representation before supervised AF training | PPG only |
+| Calibration and selective classification | Better probability calibration and abstention can improve practical screening decisions without retraining a backbone | PPG-derived predictions |
+
+The reference gated-fusion model remains important because it provides a complete waveform/STFT/feature PPG classifier and a baseline for comparison. The five strategies above are framed equally as complementary attempts to improve screening behaviour. Some modify the segment representation, some modify training, and some modify the final record-level decision. This is intentional: the thesis evaluates a screening system, not only a leaderboard of neural backbones.
+
+### 5.14 `QA-BeatFormer`: Quality-Aware Beat Transformer
+
+`QA-BeatFormer` was implemented to make the neural representation closer to the physiology of AF. Instead of treating the 30-second PPG segment only as a generic waveform, the model detects pulse peaks, extracts beat-centred windows, and represents the segment as a sequence of beat tokens. Each token combines beat morphology, local rhythm context, and quality information:
+
+```text
+30 s PPG segment
+  -> preprocessing and peak detection
+  -> beat-centred windows
+  -> morphology encoder for each beat
+  -> rhythm/SQI feature embedding
+  -> Transformer encoder over beat tokens
+  -> attention pooling
+  -> AF logit
+```
+
+For each detected pulse, a fixed-length beat window is resampled to 128 samples. A shared 1D CNN maps the beat waveform to a morphology embedding. A small MLP maps local rhythm and quality features, such as IBI statistics, quality score, template correlation, and peak reliability, into the same model dimension. The token representation is:
+
+```text
+token_i = morphology_i + rhythm_quality_i + position_i
+```
+
+A Transformer encoder then models relationships between beats. This is appropriate because AF is not only a local waveform-shape problem; it is characterised by irregular beat-to-beat timing and unstable pulse morphology over a sequence. Attention pooling converts the beat sequence into a segment embedding, which is classified by an MLP head.
+
+The implemented `QA-BeatFormer` is still a PPG-only model. It does not use ECG, demographics, or external clinical variables at inference. Its main design difference from `RhythmMorphologyFusionNet` is the level at which evidence is fused. The original model fuses branch-level waveform, STFT, and feature embeddings. `QA-BeatFormer` fuses morphology, rhythm, and quality at the physiologically meaningful beat-token level.
+
+### 5.15 `PrecisionGuard-MIL`: Record-Level Verifier
+
+A main practical error mode in PPG AF screening is false-positive AF prediction rather than lack of AF sensitivity. `PrecisionGuard-MIL` was therefore implemented as a second-stage record-level verifier. It does not replace the segment classifiers. Instead, it receives their predictions and additional PPG-derived reliability features, then decides whether the record-level evidence is consistent enough to support an AF prediction.
+
+For each segment, the verifier feature vector includes:
+
+- segment probabilities from the gated-fusion model, waveform-only model, and `QA-BeatFormer`,
+- probability agreement and disagreement statistics,
+- PPG quality score, runtime quality score, template correlation, and heart-band energy ratio,
+- estimated heart rate, mean heart rate, heart-rate variability, and sample entropy,
+- segment position within the record.
+
+Record-level aggregate features are also included, such as top-k mean probability, maximum probability, fraction of segments above 0.5 and 0.7, mean quality, quality among high-probability segments, and log segment count. A segment encoder MLP embeds each segment vector. Attention pooling then produces a weighted record representation:
+
+```text
+h_i = MLP(z_i)
+s_i = v^T tanh(W h_i)
+a_i = softmax(s_i)
+h_record = sum_i a_i h_i
+logit_record = classifier([h_record, aggregate_features])
+```
+
+Hard-negative emphasis is used during training. Non-AF records that earlier models classify as high-risk AF receive a larger loss weight. In the completed run, 754 hard-negative records were identified and up-weighted by a factor of 3.0. This directly targets the false-positive burden that limited F1 in earlier experiments.
+
+`PrecisionGuard-MIL` is still PPG-derived because all inputs come from PPG segment classifiers and PPG signal-processing features. It is best interpreted as a final screening verifier, not as a new raw waveform backbone.
+
+### 5.16 ECG-Supervised PPG Distillation
+
+The ECG-supervised strategy uses paired ECG information during training to improve a PPG-only student. The motivation is that ECG R-peaks provide cleaner cardiac timing than PPG peaks, while PPG remains the intended deployment signal. This is a teacher-student design:
+
+```text
+Training:
+  PPG student inputs -> AF classifier
+  ECG-derived teacher features -> auxiliary/distillation targets
+
+Inference:
+  PPG student inputs only -> AF probability
+```
+
+The PPG student uses the same 30-second PPG-derived feature family as the main pipeline, while the teacher side extracts ECG and cross-modal timing descriptors. The teacher feature set includes ECG peak count, ECG heart-band energy ratio, ECG template correlation, ECG-estimated heart rate, ECG IBI statistics, ECG sample entropy, matched PPG-ECG peak count, PPG-ECG timing delay, IBI error, IBI correlation, and respiratory coupling descriptors where available.
+
+The training objective combines three components:
+
+```text
+L = L_AF + lambda_distill * L_teacher + lambda_aux * L_aux
+```
+
+`L_AF` is the supervised AF/SR classification loss. `L_teacher` encourages the PPG student representation to align with ECG-derived rhythm evidence. `L_aux` predicts selected auxiliary timing and respiratory targets. The completed p00-p02 paired experiment used metadata folds 0-7 for training, fold 8 for validation, and fold 9 for testing. The best epoch was epoch 3, and the validation-selected segment threshold was 0.966.
+
+This method must be described carefully. It is not a PPG-only training method, because ECG is used as privileged information during training. However, it is a PPG-only inference method, because the final classifier does not require ECG at test time. In a practical screening system, this means ECG can help train a better PPG model offline while the deployed wearable still uses only optical PPG.
+
+### 5.17 SSL-Pretrained PPG Encoder and Fine-Tuning
+
+Self-supervised pretraining was implemented to test whether the PPG encoder can learn useful structure from unlabelled PPG before supervised AF/SR fine-tuning. The pretraining stage uses SimCLR-style contrastive learning. For each PPG segment, two augmented views are generated using waveform augmentations such as amplitude scaling, time shift, noise, local masking, drift, and mild time warping. The encoder and projection head are trained using an NT-Xent contrastive loss:
+
+```text
+x_a = augment_a(x)
+x_b = augment_b(x)
+z_a = normalize(projector(encoder(x_a)))
+z_b = normalize(projector(encoder(x_b)))
+L_SSL = NT_Xent(z_a, z_b)
+```
+
+The intuition is that two distorted views of the same physiological segment should have similar representations, while different segments should remain separable. This forces the encoder to learn PPG morphology and rhythm structure that are robust to nuisance transformations.
+
+After pretraining, the projection head is discarded. A supervised AF classifier is attached to the pretrained encoder and fine-tuned on the labelled p00-p02 AF/SR task. The completed MIMIC PPG SSL run used 622,065 training segments and 93,200 validation segments for pretraining. It ran for 30 epochs, selected epoch 28, and achieved best validation contrastive loss 1.2752. The supervised fine-tuning run then used the SSL checkpoint, ran for 10 epochs, selected epoch 6, and evaluated both segment-level and record-level aggregation rules.
+
+### 5.18 Calibration and Selective Classification
+
+The final decision-layer experiments operate on saved model predictions rather than retraining the waveform models. Calibration methods are fitted on validation predictions and then applied to test predictions:
+
+- temperature scaling,
+- Platt scaling,
+- isotonic regression,
+- beta-style logistic calibration.
+
+Several record-level aggregation rules are then compared, including mean, trimmed mean, SQI-weighted mean, top-k mean, and quality-filtered top-k mean. The selected post-hoc full-coverage configuration is the one with the highest validation F1.
+
+Selective classification adds a no-call option. A confidence score is computed for each record, and only the highest-confidence fraction is classified. The rest are marked as inconclusive. The main confidence score retained in the completed analysis is SQI-weighted margin:
+
+```text
+confidence = |p_record - 0.5| * mean_SQI
+```
+
+This creates a clinically interpretable screening workflow:
+
+```text
+high probability + high confidence -> AF alert
+low probability + high confidence  -> SR/no AF alert
+low confidence or poor quality      -> inconclusive / repeat measurement / ECG follow-up
+```
+
+Selective classification is not directly comparable to full-coverage F1 because it changes the denominator by abstaining on uncertain records. It is nevertheless important for PPG screening, where forcing a decision on every noisy record may be less useful than producing fewer but more reliable automatic decisions.
+
 ## 6. Evaluation Protocol
 
 ### 6.1 Primary and Secondary Evaluation Levels
@@ -998,6 +1195,30 @@ val_record_threshold_sweep.csv
 test_record_threshold_sweep.csv
 ```
 
+### 6.8 Evaluation of Comparative Strategy Families
+
+The comparative strategy families are evaluated using the same train/validation/test fold principle wherever possible: folds 0-7 for training, fold 8 for validation, and fold 9 for testing. However, not every method has exactly the same evaluation unit. This distinction is central to fair interpretation:
+
+| Method family | Main evaluation unit | Reason |
+|---|---|---|
+| Original gated fusion, branch ablation, `QA-BeatFormer` | `record_id+event_id` record-event groups | Matches the original MIMIC-III-Ext-PPG rhythm-event framing |
+| `PrecisionGuard-MIL` | `record_id+event_id` record-event groups | Built directly from stage-1 segment predictions grouped into record-event bags |
+| Calibration/selective classification | `record_id+event_id` record-event groups | Uses saved predictions from the existing p00-p02 models |
+| ECG-supervised PPG distillation | post-hoc `record_id` groups with record label defined as max segment label | The paired ECG/PPG export contains mixed segment labels within some record IDs, so naive group-mean metrics during training are not meaningful |
+| SSL-pretrained PPG fine-tuning | `record_id` groups with validation-selected aggregation | The fine-tuning script exports record-level aggregation files for mean, median, and top-k rules |
+
+This means that the strategy comparison table in Section 7 is a screening-system comparison, not a perfectly controlled architecture-only comparison. The reference gated-fusion and `QA-BeatFormer` results remain the cleanest record-event-level comparison under the same grouping rule. The ECG-supervised and SSL rows are still highly informative because they use the same p00-p02 fold split and PPG-only inference, but their record-level aggregation definitions are reported explicitly so that the reader does not overinterpret them as identical to the original record-event unit.
+
+### 6.9 Reporting Rules for Post-Hoc and Selective Results
+
+The paper separates three kinds of results:
+
+1. **Primary full-coverage test results.** Thresholds and aggregation rules are selected on validation data and then fixed on the test fold.
+2. **Analysis-only threshold sweeps.** These show what would be possible at different test thresholds, but they are not used as primary headline results.
+3. **Selective-classification results.** These report performance on retained high-confidence records at a specified coverage. They are useful for deployment design but should not be compared as if they classify the full test set.
+
+For calibration and selective classification, the reported full-coverage configuration is the validation-selected global best. For SSL fine-tuning, the main record-level row uses the aggregation method selected by validation F1. For ECG-supervised distillation, the main record-level row uses the validation-selected segment threshold from the training run together with median record aggregation; a separate post-hoc aggregation table is reported so the threshold and aggregation choice are transparent.
+
 ## 7. Results
 
 ### 7.1 Controlled Baseline: MIMIC PERform AF
@@ -1037,7 +1258,7 @@ The main model-development comparison is performed on MIMIC-III-Ext-PPG p00-p02.
 | Class-aware 1:2 sampler | MIMIC-III-Ext-PPG p00-p02 | 0.781 | 0.9514 | 0.8410 | 0.9680 | 0.7973 | 0.8186 | 0.9467 | 0.8311 |
 | Final SQI pipeline | MIMIC-III-Ext-PPG p00-p02 | 0.713 | 0.9536 | 0.8241 | 0.9729 | 0.8194 | 0.8217 | 0.9272 | 0.8365 |
 
-Among the completed p00-p02 runs, the final SQI pipeline gives the strongest record-event-level F1 and precision. Compared with the 17-feature logistic baseline, the final hybrid model improves record-event-level F1 from 0.7775 to 0.8217 and precision from 0.7214 to 0.8194, although the feature-only baseline has slightly higher sensitivity and AUROC. The stronger rhythm-feature logistic condition in Section 7.3 reaches F1 0.8177, so the hybrid model's main advantage is not a large F1 margin over every lightweight baseline. Its clearest gain is a stronger precision-oriented operating point, with precision 0.8194 compared with 0.8017 for the rhythm-feature logistic model with SQI filtering. Compared with the initial large-scale hybrid experiment, the final SQI pipeline improves accuracy, specificity, precision, F1, and AUPRC, while sensitivity decreases from 0.8454 to 0.8241. Because this comparison changes several ingredients at once, it is treated as model-development evidence rather than as an isolated SQI ablation.
+Among the reference p00-p02 model-development runs, the final SQI gated-fusion pipeline gives the strongest record-event-level F1 and precision. Compared with the 17-feature logistic baseline, the final hybrid model improves record-event-level F1 from 0.7775 to 0.8217 and precision from 0.7214 to 0.8194, although the feature-only baseline has slightly higher sensitivity and AUROC. The stronger rhythm-feature logistic condition in Section 7.4 reaches F1 0.8177, so the hybrid model's main advantage is not a large F1 margin over every lightweight baseline. Its clearest gain is a stronger precision-oriented operating point, with precision 0.8194 compared with 0.8017 for the rhythm-feature logistic model with SQI filtering. Compared with the initial large-scale hybrid experiment, the final SQI pipeline improves accuracy, specificity, precision, F1, and AUPRC, while sensitivity decreases from 0.8454 to 0.8241. Because this comparison changes several ingredients at once, it is treated as model-development evidence rather than as an isolated SQI ablation.
 
 Additional exploratory record-event-level architectures were tested but not retained:
 
@@ -1047,7 +1268,75 @@ Additional exploratory record-event-level architectures were tested but not reta
 | Record MIL | 0.7558 | 0.9471 | 0.7611 | Lower F1 and precision |
 | Record MIL second variant | 0.7864 | 0.9545 | 0.7799 | Better AUROC, lower F1 than final SQI |
 
-### 7.3 Feature-Level SQI Ablation
+### 7.3 Comparative Evaluation of Five Screening Strategies
+
+The main comparative experiment evaluates five strategy families alongside the reference gated-fusion model. The table separates segment-level models from record-level decision strategies and explicitly states the inference signal. All retained strategies use PPG-only inference; ECG-supervised distillation uses ECG only during training.
+
+Segment-level comparison:
+
+| Method | Training strategy | Inference signal | Threshold source | Accuracy | Sensitivity | Specificity | Precision | F1 | AUROC | AUPRC |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Final SQI gated fusion | Supervised, quality-aware focal loss | PPG waveform + PPG STFT + PPG features | Validation record-event F1 | 0.9526 | 0.8843 | 0.9594 | 0.6841 | 0.7714 | 0.9525 | 0.7947 |
+| `QA-BeatFormer` | Supervised beat-token Transformer | PPG waveform + PPG features | Validation record-event F1 | 0.9475 | 0.9043 | 0.9518 | 0.6513 | 0.7572 | 0.9532 | 0.7602 |
+| ECG-supervised PPG distillation | ECG teacher/auxiliary supervision during training | PPG features only at inference | Validation segment F1 | 0.9486 | 0.8650 | 0.9581 | 0.7015 | 0.7747 | 0.9489 | 0.7558 |
+| SSL-pretrained PPG fine-tuning | SimCLR PPG pretraining then supervised fine-tuning | PPG waveform + PPG features | Validation segment F1 | 0.9523 | 0.8803 | 0.9594 | 0.6835 | 0.7695 | 0.9562 | 0.8178 |
+
+At segment level, the four strongest approaches are close. ECG-supervised distillation gives the best segment F1 among these rows (0.7747), mainly by improving precision relative to `QA-BeatFormer`. SSL fine-tuning gives the strongest segment-level AUPRC (0.8178), suggesting better precision-recall ranking even though its validation-selected operating-point F1 is slightly below ECG-supervised distillation. `QA-BeatFormer` has high sensitivity (0.9043) but lower precision (0.6513), so it is better interpreted as a high-recall segment detector than as the final false-positive-reduction mechanism.
+
+Full-coverage record-level comparison:
+
+| Method | Inference signal | Aggregation / evaluation unit | Accuracy | Sensitivity | Specificity | Precision | F1 | AUROC | AUPRC |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Final SQI gated fusion | PPG waveform + STFT + features | `record_id+event_id`, quality-weighted mean | 0.9536 | 0.8241 | 0.9729 | 0.8194 | 0.8217 | 0.9272 | 0.8365 |
+| `QA-BeatFormer` | PPG beat tokens + features | `record_id+event_id`, model aggregation | 0.9483 | 0.8561 | 0.9621 | 0.7709 | 0.8113 | 0.9467 | 0.8241 |
+| `PrecisionGuard-MIL` | Stage-1 PPG model outputs + PPG reliability features | `record_id+event_id`, attention MIL verifier | 0.9442 | 0.8401 | 0.9597 | 0.7565 | 0.7961 | 0.9578 | 0.8373 |
+| `PrecisionGuard` baseline top-5 mean | Stage-1 PPG model outputs | `record_id+event_id`, top-5 mean | 0.9477 | 0.8430 | 0.9634 | 0.7744 | 0.8072 | 0.9312 | 0.7571 |
+| SSL-pretrained PPG fine-tuning | PPG waveform + features | `record_id`, validation-selected mean aggregation | 0.9243 | 0.9013 | 0.9301 | 0.7672 | 0.8289 | 0.9651 | 0.9358 |
+| ECG-supervised PPG distillation | PPG features only at inference | `record_id`, median aggregation | 0.9514 | 0.8316 | 0.9819 | 0.9209 | 0.8740 | 0.9705 | 0.9344 |
+
+The strongest full-coverage record-level operating point is ECG-supervised PPG distillation, with F1 0.8740 and precision 0.9209. This is a meaningful improvement over the reference gated-fusion F1 0.8217, especially because the main gain is precision rather than simply increasing sensitivity. The result supports the hypothesis that training-time ECG supervision can teach a PPG-only student to avoid some AF-like false positives.
+
+The SSL-pretrained PPG encoder also improves the full-coverage record-level F1 to 0.8289 and substantially improves ranking metrics, with AUROC 0.9651 and AUPRC 0.9358. This suggests that contrastive pretraining learned a useful PPG representation even though its operating-point precision did not match ECG-supervised distillation.
+
+`PrecisionGuard-MIL` did not outperform its own top-5 mean baseline at the validation-selected threshold, with F1 0.7961 versus 0.8072 for the top-5 baseline. However, it improved threshold-independent ranking over the top-5 baseline, especially AUPRC (0.8373 versus 0.7571). This means the idea remains useful, but the retained verifier threshold and calibration were not yet optimal for the full-coverage operating point.
+
+The ECG-supervised and SSL rows use post-hoc `record_id` aggregation rather than the original `record_id+event_id` unit. They are therefore reported as screening-level strategy results rather than a perfectly controlled architecture-only comparison. The main conclusion remains valid but bounded: among the five strategies tested, ECG-supervised PPG distillation and SSL pretraining produced the strongest evidence for improved record-level screening performance, while `QA-BeatFormer` and `PrecisionGuard-MIL` were useful exploratory strategies but not the final best operating point.
+
+Post-hoc calibration and selective classification were evaluated using the saved predictions from existing PPG-only models. The best full-coverage post-hoc configuration was waveform-only predictions with isotonic calibration and trimmed-mean aggregation:
+
+| Configuration | Threshold | Test F1 | Precision | Sensitivity | Specificity | AUROC | AUPRC |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Waveform + isotonic + trimmed mean | 0.443 | 0.8069 | 0.7701 | 0.8474 | 0.9623 | 0.9366 | 0.8177 |
+
+Calibration improved probability reliability even when full-coverage F1 did not exceed the reference gated-fusion result:
+
+| Model | Validation-selected calibration | Aggregation | Segment ECE before | Segment ECE after | Brier before | Brier after | Test F1 |
+|---|---|---|---:|---:|---:|---:|---:|
+| Waveform-only | Isotonic | Trimmed mean | 0.0522 | 0.0413 | 0.0414 | 0.0395 | 0.8069 |
+| Gated fusion | Platt | Trimmed mean | 0.0758 | 0.0440 | 0.0510 | 0.0414 | 0.8008 |
+| `QA-BeatFormer` | Isotonic | Mean | 0.1644 | 0.0445 | 0.0751 | 0.0413 | 0.8038 |
+
+This full-coverage post-hoc model did not beat the original final SQI gated-fusion result. Its value is instead in selective classification. Using SQI-weighted margin as the confidence score, the same calibrated decision layer achieved:
+
+| Coverage | Records retained | Accuracy | Sensitivity | Specificity | Precision | F1 | AUROC | AUPRC |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 80% | 4241 | 0.9724 | 0.8720 | 0.9858 | 0.8916 | 0.8817 | 0.9392 | 0.8299 |
+| 70% | 3711 | 0.9752 | 0.8780 | 0.9873 | 0.8955 | 0.8867 | 0.9491 | 0.8389 |
+| 50% | 2650 | 0.9845 | 0.9240 | 0.9912 | 0.9205 | 0.9222 | 0.9768 | 0.8870 |
+
+This is one of the most practically important findings. If the device is allowed to abstain on uncertain records, a PPG-only high-confidence mode can achieve much higher F1 and precision than the full-coverage setting. The trade-off is coverage: at 80% coverage, one fifth of records require repeat measurement or ECG follow-up; at 50% coverage, half of records are left inconclusive. For a wearable screening system, this is not necessarily a weakness. A no-call state may be safer than an overconfident prediction on unreliable PPG.
+
+The SSL and ECG-supervised runs also provide useful training details:
+
+| Strategy | Training summary | Selected checkpoint |
+|---|---|---|
+| ECG-supervised PPG distillation | 617,611 paired p00-p02 PPG/ECG segments; folds 0-7 train, 8 validation, 9 test; 9 epochs run; best epoch 3 | `/vol/bitbucket/mc1920/mimic_ext_paired_physio_distill_20260514_220436/best_model.pt` |
+| MIMIC PPG SSL pretraining | 622,065 training PPG segments and 93,200 validation segments; 30 epochs; best validation contrastive loss 1.2752 at epoch 28 | `/vol/bitbucket/mc1920/mimic_ppg_ssl_simclr_20260514_095946/best_model.pt` |
+| SSL supervised fine-tuning | Initialised from SSL checkpoint; 10 epochs; best epoch 6; validation-selected segment threshold 0.908 | `/vol/bitbucket/mc1920/mimic_ppg_ssl_finetune_20260515_095109/best_model.pt` |
+
+These artefacts make the comparative strategies reproducible and distinguish completed experimental evidence from proposed future work.
+
+### 7.4 Feature-Level SQI Ablation
 
 To separate part of the SQI contribution from the full hybrid model, a feature-level ablation was run using weighted logistic regression. This ablation does not replace full retraining of the neural waveform/STFT/fusion model, but it tests SQI filtering, SQI-derived features, and quality-weighted aggregation under a consistent lightweight classifier. For each condition, the decision threshold was selected on validation record-event-level F1 and then fixed on the test set.
 
@@ -1060,11 +1349,11 @@ To separate part of the SQI contribution from the full hybrid model, a feature-l
 | All 17 features with full feature-level SQI | Yes | Yes | Yes | 0.763 | 0.9374 | 0.8430 | 0.9514 | 0.7214 | 0.7775 | 0.9542 | 0.8142 |
 | Quality features only | Yes | Yes | Yes | 0.668 | 0.8893 | 0.6032 | 0.9319 | 0.5693 | 0.5857 | 0.8462 | 0.6134 |
 
-The ablation shows that SQI filtering modestly improves a rhythm-feature logistic baseline, increasing record-event-level F1 from 0.8137 to 0.8177. Quality-weighted aggregation also gives a small gain for the 17-feature logistic baseline, increasing F1 from 0.7764 to 0.7775. However, simply adding SQI-related features to a linear model does not automatically improve the chosen operating point: the all-feature logistic models have lower precision and F1 than the rhythm-only logistic model, despite similar AUROC and AUPRC. This suggests that SQI is useful as a coverage and reliability mechanism, but that its best use is not necessarily raw linear feature inclusion. The retained final hybrid checkpoint gives the strongest operating-point F1 and precision among the completed p00-p02 model-development runs.
+The ablation shows that SQI filtering modestly improves a rhythm-feature logistic baseline, increasing record-event-level F1 from 0.8137 to 0.8177. Quality-weighted aggregation also gives a small gain for the 17-feature logistic baseline, increasing F1 from 0.7764 to 0.7775. However, simply adding SQI-related features to a linear model does not automatically improve the chosen operating point: the all-feature logistic models have lower precision and F1 than the rhythm-only logistic model, despite similar AUROC and AUPRC. This suggests that SQI is useful as a coverage and reliability mechanism, but that its best use is not necessarily raw linear feature inclusion. Within the reference gated-fusion development stage, the retained final hybrid checkpoint gives the strongest operating-point F1 and precision.
 
-### 7.4 Neural Branch Ablation
+### 7.5 Neural Branch Ablation
 
-To test which neural input stream contributes most strongly, four branch variants were retrained on the same p00-p02 SQI-accepted split: full fusion, waveform-only, spectral-only, and feature-only neural models. For each model, the decision threshold was selected on validation record-event-level F1 and fixed for test evaluation. This is an independent retraining ablation, so the full-fusion row is not the same checkpoint as the retained final SQI model reported in Section 7.5.
+To test which neural input stream contributes most strongly, four branch variants were retrained on the same p00-p02 SQI-accepted split: full fusion, waveform-only, spectral-only, and feature-only neural models. For each model, the decision threshold was selected on validation record-event-level F1 and fixed for test evaluation. This is an independent retraining ablation, so the full-fusion row is not the same checkpoint as the retained final SQI model reported in Section 7.6.
 
 | Neural variant | Active input branches | Threshold | Epochs run | Best epoch | Accuracy | Sensitivity | Specificity | Precision | F1 | AUROC | AUPRC |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -1073,9 +1362,9 @@ To test which neural input stream contributes most strongly, four branch variant
 | Spectral-only | STFT | 0.531 | 30 | 22 | 0.9345 | 0.8488 | 0.9473 | 0.7062 | 0.7710 | 0.9475 | 0.8128 |
 | Feature-only neural | 17 features | 0.606 | 30 | 20 | 0.9306 | 0.8735 | 0.9391 | 0.6814 | 0.7656 | 0.9447 | 0.8135 |
 
-This ablation shows that the waveform branch carries the strongest operating-point evidence among the retrained neural variants, with record-event-level F1 0.8072. The spectral-only and feature-only neural models have similar threshold-independent ranking performance, but lower precision and F1 at their validation-selected thresholds. The independently retrained full-fusion model does not outperform the waveform-only model in this run, even though the retained final SQI checkpoint in Section 7.5 remains the strongest overall operating point. The branch ablation therefore supports the importance of learned waveform morphology, but it does not establish a stable additive gain from all three branches under the current training setup. Multiple random seeds and further fusion tuning would be needed before claiming that gated fusion is consistently superior to a waveform-only neural model.
+This ablation shows that the waveform branch carries the strongest operating-point evidence among the retrained neural variants, with record-event-level F1 0.8072. The spectral-only and feature-only neural models have similar threshold-independent ranking performance, but lower precision and F1 at their validation-selected thresholds. The independently retrained full-fusion model does not outperform the waveform-only model in this run, even though the retained final SQI checkpoint in Section 7.6 remains the strongest operating point within the reference gated-fusion development stage. The branch ablation therefore supports the importance of learned waveform morphology, but it does not establish a stable additive gain from all three branches under the current training setup. Multiple random seeds and further fusion tuning would be needed before claiming that gated fusion is consistently superior to a waveform-only neural model.
 
-### 7.5 Final SQI Validation and Test Results
+### 7.6 Final SQI Validation and Test Results
 
 The final SQI model stopped early after 18 epochs, with the best validation epoch at epoch 8. The validation-selected threshold was 0.713.
 
@@ -1119,7 +1408,7 @@ There is a visible validation-test gap, especially at record-event-level where F
 
 The corresponding test record-event-level Brier score was 0.0524, and the ten-bin expected calibration error was 0.0663. These values are reported as probability-calibration diagnostics rather than as model-selection criteria; the primary operating point remains the validation-selected F1 threshold.
 
-### 7.6 Confusion Matrices
+### 7.7 Confusion Matrices
 
 Record-event-level test confusion matrix at threshold 0.713:
 
@@ -1144,7 +1433,7 @@ Specificity = 4488 / (4488 + 125) = 0.9729
 F1 = 0.8217
 ```
 
-### 7.7 Threshold Analysis
+### 7.8 Threshold Analysis
 
 The primary threshold is selected on validation data. A test-set threshold sweep is included only to understand the trade-off between sensitivity and precision.
 
@@ -1159,7 +1448,7 @@ The higher test-best threshold would reduce false positives from 125 to 75 and i
 
 *Figure 5. Test-set record-event-level sensitivity, precision, and F1 across decision thresholds. The dotted line marks the validation-selected threshold used for the primary test result.*
 
-### 7.8 Aggregation Ablation
+### 7.9 Aggregation Ablation
 
 Because the final decision is made at record-event-level, aggregation is part of the model design. Using saved segment probabilities from the final SQI model, several aggregation rules were compared. For each rule, the threshold was selected on validation record-event-level F1 and then fixed on the test set.
 
@@ -1173,7 +1462,7 @@ Because the final decision is made at record-event-level, aggregation is part of
 
 Quality-weighted averaging gives the best F1 among these aggregation choices, although the gain over a simple mean is small. The larger difference is between averaging-based aggregation and maximum/top-k pooling. Max-style aggregation is more vulnerable to isolated high-probability false-positive windows, which is why it has lower precision and F1.
 
-### 7.9 Per-Prefix Behaviour
+### 7.10 Per-Prefix Behaviour
 
 Performance differs across p00, p01, and p02:
 
@@ -1191,7 +1480,7 @@ The p01 result should be interpreted with particular caution. Its AF support is 
 
 *Figure 6. Record-event-level sensitivity, specificity, precision, and F1 by MIMIC-III-Ext-PPG prefix. The weaker p01 F1 is shown explicitly rather than hidden by the aggregate p00-p02 result.*
 
-### 7.10 Record-Event-Level Error and Reliability Analysis
+### 7.11 Record-Event-Level Error and Reliability Analysis
 
 A lightweight error analysis was performed using `test_record_predictions.csv` at the validation-selected threshold of 0.713. This does not replace a full ablation study, but it helps identify where the retained model is less reliable.
 
@@ -1232,7 +1521,7 @@ Figure 7 shows representative high-confidence waveform examples from the held-ou
 
 *Figure 7. Representative 30-second filtered and normalised PPG segments from true-positive, false-positive, false-negative, and true-negative record-events. The examples were selected from held-out test predictions using the validation-selected threshold. They illustrate model behaviour and error modes, not patient-specific clinical conclusions.*
 
-### 7.11 Claim-Evidence-Limitation Summary
+### 7.12 Claim-Evidence-Limitation Summary
 
 The main results support the following bounded claims:
 
@@ -1240,7 +1529,10 @@ The main results support the following bounded claims:
 |---|---|---|
 | SQI-aware PPG can support AF-versus-SR screening on the evaluated subset | Final record-event-level F1 0.8217, specificity 0.9729, precision 0.8194 | Retrospective p00-p02 scope, binary AF/SR task, chart-event labels |
 | Record-event aggregation gives a more useful alert-level summary than isolated windows | Record-event-level precision 0.8194 versus segment-level precision 0.6841 | Not yet a prospective alert-burden or detection-latency study |
-| The retained hybrid checkpoint gives a strong operating point | Best selected operating-point F1 and precision among completed p00-p02 model-development runs | Branch ablation does not prove stable additive benefit from all fusion branches |
+| The retained hybrid checkpoint gives a strong reference operating point | Original gated-fusion record-event F1 0.8217 and precision 0.8194 | Branch ablation does not prove stable additive benefit from all fusion branches |
+| ECG-supervised PPG distillation gives the strongest full-coverage strategy result | Record-level F1 0.8740, precision 0.9209, specificity 0.9819, AUROC 0.9705 | Uses ECG during training and post-hoc `record_id` aggregation, not pure PPG-only training |
+| SSL pretraining improves PPG representation learning | Record-level F1 0.8289, AUROC 0.9651, AUPRC 0.9358 after supervised fine-tuning | Needs consistent record-event evaluation and combination with ECG supervision |
+| Selective classification can provide a high-confidence screening mode | F1 0.8817 at 80% coverage and 0.9222 at 50% coverage | Abstains on uncertain records, so coverage must be reported with performance |
 | SQI improves reliability interpretation | High accepted-window coverage and explicit deployment no-call interpretation; SQI filtering modestly improves rhythm-feature logistic F1 | Full retrained neural SQI ablation remains future work |
 | Embedded inference has a credible feasibility path | Compact 17-feature Nordic/Zephyr smoke-test integration | Precomputed features only; live C feature extraction and clinical hardware validation remain future work |
 
@@ -1338,27 +1630,46 @@ This supports the feasibility of on-device inference, but the deployed compact m
 
 ### 9.1 Main Finding
 
-The key finding is that SQI-aware PPG processing can support promising retrospective record-event-level AF-like rhythm screening on the evaluated ICU-derived p00-p02 subset. The final MIMIC-III-Ext-PPG result has high specificity (0.9729), good precision (0.8194), and balanced F1 (0.8217) at the validation-selected threshold. The record-event bootstrap interval for F1 is 0.7988-0.8438, while the subject-clustered interval is wider at 0.6885-0.9310. This is encouraging for screening because high specificity reduces unnecessary alerts, while sensitivity above 0.82 indicates that most AF record-event groups are detected. The wider subject-clustered interval also keeps the result in the category of subset-level retrospective evidence rather than definitive patient-level validation.
+The key finding is that SQI-aware PPG processing can support useful retrospective AF-versus-SR screening on the evaluated ICU-derived p00-p02 subset, especially when the problem is treated as a complete screening-system design rather than as a single-backbone classification task. The reference `RhythmMorphologyFusionNet` achieved record-event-level F1 0.8217, specificity 0.9729, precision 0.8194, AUROC 0.9272, and AUPRC 0.8365. This already supports the feasibility of SQI-aware PPG screening at record-event level.
 
-The result also shows the limits of small controlled baselines. MIMIC PERform AF achieved perfect record-level test performance, but that result is based on only five test records. It is useful as a sanity check, not as the main claim. The larger p00-p02 subset reveals the more realistic challenges: imbalance, heterogeneous ICU physiology, variation between prefixes, and sensitivity-specificity trade-offs.
+The five-strategy comparison shows where the real gains come from. ECG-supervised PPG distillation produced the strongest full-coverage record-level operating point, with F1 0.8740, precision 0.9209, sensitivity 0.8316, specificity 0.9819, AUROC 0.9705, and AUPRC 0.9344. SSL-pretrained PPG fine-tuning also improved record-level ranking and reached F1 0.8289 with AUROC 0.9651 and AUPRC 0.9358. Selective classification further showed that a calibrated high-confidence mode can reach F1 0.8817 at 80% coverage and F1 0.9222 at 50% coverage. The overall message is therefore not simply that one hybrid model works, but that PPG AF screening improves when signal processing, representation learning, record-level decision logic, and uncertainty-aware abstention are treated together.
+
+The result also shows the limits of small controlled baselines. MIMIC PERform AF achieved perfect record-level test performance, but that result is based on only five test records. It is useful as a sanity check, not as the main claim. The larger p00-p02 subset reveals the more realistic challenges: imbalance, heterogeneous ICU physiology, variation between prefixes, false positives, and threshold-dependent sensitivity-specificity trade-offs.
 
 ### 9.2 Segment-Level and Record-Level Metrics Tell Different Stories
 
-Segment-level test sensitivity is higher than record-event-level sensitivity (0.8843 versus 0.8241), but segment-level precision is much lower (0.6841 versus 0.8194). This occurs because individual 30-second windows are noisy and the segment-level AF prevalence in the test split is only 9.05%. Even a modest number of false-positive SR windows can reduce segment-level precision.
+Segment-level and record-level results answer different questions. Segment-level metrics show how the classifier behaves on individual 30-second windows. Record-level metrics show whether repeated evidence across a clinical record or rhythm event supports a screening decision. In the original final SQI model, segment-level sensitivity is higher than record-event-level sensitivity (0.8843 versus 0.8241), but segment-level precision is much lower (0.6841 versus 0.8194). This occurs because individual 30-second windows are noisy and the segment-level AF prevalence in the test split is only 9.05%. Even a modest number of false-positive SR windows can reduce segment-level precision.
 
 Record-event-level aggregation improves practical interpretability. By averaging probabilities across a record-event group and weighting by quality, isolated false-positive windows have less influence. This is closer to how a screening system would operate, because alerts should be based on repeated or episode-level evidence rather than a single local window.
 
 The aggregation ablation supports this design choice. Quality-weighted averaging produced the highest test F1 among the tested aggregation rules, with F1 0.8217 compared with 0.8205 for an unweighted mean, 0.8112 for a median, and 0.7803 for maximum probability pooling. The small gap between quality-weighted and unweighted averaging suggests that the main benefit comes from aggregating repeated evidence, while quality weighting gives a modest additional improvement.
 
-The neural branch ablation adds a more cautious interpretation of the model architecture. The waveform-only neural model achieved the strongest F1 among the retrained branch variants, while the independently retrained full-fusion model did not exceed it. This does not invalidate the retained final hybrid checkpoint, which still has the strongest overall operating-point F1 in the completed p00-p02 experiments, but it does show that the current evidence for gated multi-branch fusion is not absolute. The most defensible architectural claim is that learned waveform morphology is highly informative, and that spectral and feature branches are plausible complementary inputs whose stable incremental value would require repeated-seed ablation or further fusion tuning.
+The five comparative strategies strengthen this conclusion. `QA-BeatFormer` is sensitive at segment level but loses precision. `PrecisionGuard-MIL` was explicitly designed to verify record-level evidence, but its validation-selected operating point did not beat the simpler top-5 mean baseline. ECG-supervised distillation and SSL fine-tuning were more effective because they changed the learned representation before aggregation. Selective classification then changed the final decision policy by allowing abstention on low-confidence records.
 
-### 9.3 Interpretation of Precision and Specificity
+### 9.3 What the Gated-Fusion Ablation Means
 
-At the selected threshold, record-event-level specificity is high. The model correctly rejects 4488 of 4613 SR record-event groups. This is important because false-positive AF alerts can create unnecessary anxiety and clinical workload.
+The reference gated-fusion architecture was motivated by a sensible hypothesis: waveform morphology, spectral structure, and hand-crafted rhythm/SQI features should contain complementary information. The retained final SQI checkpoint did achieve a strong operating point. However, the neural branch ablation shows that the evidence for branch-level fusion superiority is not definitive. The waveform-only branch achieved F1 0.8072, while the full-fusion retrain achieved F1 0.8016. The retained final checkpoint remains better than both, but it differs in training dynamics and selected checkpoint state, so it cannot be used alone to claim that fusion is consistently superior.
 
-The cost is that 121 of 688 AF record-event groups are missed. Whether this operating point is acceptable depends on deployment context. For user-facing alerts, higher precision and specificity may be preferred. For clinician-facing retrospective review, a lower threshold may be acceptable to increase sensitivity.
+This does not make the gated-fusion work weak. Instead, it makes the thesis stronger because it shows honest model development. The original model established a complete PPG waveform/STFT/feature pipeline, then the ablation revealed that learned waveform morphology was the strongest evidence stream. That result motivated `QA-BeatFormer`, SSL pretraining, and ECG-supervised distillation. In other words, the gated-fusion model is the reference system that exposed the next research direction.
 
-### 9.4 Role of SQI
+The most defensible architectural claim is therefore:
+
+```text
+PPG waveform morphology is highly informative.
+Branch-level fusion can produce a strong operating point.
+Stable superiority of gated fusion over strong waveform-only alternatives is not proven by the current single-seed ablation.
+Later improvements came more clearly from training signal, pretraining, and decision policy.
+```
+
+### 9.4 Precision, Specificity, and the False-Positive Bottleneck
+
+At the selected threshold, the reference gated-fusion model has high record-event-level specificity. It correctly rejects 4488 of 4613 SR record-event groups. This is important because false-positive AF alerts can create unnecessary anxiety and clinical workload. The cost is that 121 of 688 AF record-event groups are missed. Whether this operating point is acceptable depends on deployment context. For user-facing alerts, higher precision and specificity may be preferred. For clinician-facing retrospective review, a lower threshold may be acceptable to increase sensitivity.
+
+The comparative results confirm that precision is the bottleneck. `QA-BeatFormer` increased sensitivity but did not solve false positives. `PrecisionGuard-MIL` was designed specifically for false-positive reduction but did not exceed its baseline at the selected threshold. ECG-supervised distillation was the most successful because it increased precision to 0.9209 while keeping sensitivity at 0.8316. This suggests that many false positives are not random threshold errors; they are PPG patterns that look rhythmically plausible but are easier to disambiguate when the model has learned from ECG-derived timing evidence.
+
+Selective classification addresses the same bottleneck from a deployment-policy angle. At 80% coverage, precision increases to 0.8916 and F1 to 0.8817. At 50% coverage, precision reaches 0.9205 and F1 0.9222. This means that a clinically realistic PPG system should probably include an inconclusive state. A forced decision on every record is not always the safest or most useful mode for noisy optical physiology.
+
+### 9.5 Role of SQI
 
 SQI is built into three stages:
 
@@ -1370,7 +1681,15 @@ This is important because AF-like irregularity can be produced by signal artefac
 
 The coverage analysis reduces one possible concern: the SQI gate did not obtain high performance by discarding most of the data. Acceptance rates were 0.9770 for training, 0.9691 for validation, and 0.9836 for testing. Prefix-level acceptance was also high, from 0.9683 in p00 to 0.9835 in p01. However, coverage was not perfectly uniform. The p00 AF acceptance rate was 0.9222, lower than the p01 and p02 AF acceptance rates, so SQI remains part of the reliability profile and not merely a preprocessing detail.
 
-### 9.5 Edge Deployment Interpretation
+The calibration/selective results show another role for SQI: it can be used after model training as part of a confidence score. SQI-weighted margin was the best confidence rule in the selective-classification experiment. This supports the idea that quality should not be used only as a hard preprocessing filter; it can also guide final decision confidence and no-call behaviour.
+
+### 9.6 ECG-Supervised Distillation and SSL Interpretation
+
+The ECG-supervised result is the strongest quantitative strategy, but it must be framed accurately. It is not a pure PPG training experiment. ECG-derived features are used during training as privileged supervision. The final inference path remains PPG-only. This distinction makes the method clinically plausible: large paired ECG/PPG datasets can be used offline to train better PPG models, while the deployed wearable still requires only optical PPG. The record-level F1 0.8740 and precision 0.9209 suggest that ECG supervision helps the PPG student learn rhythm evidence that is more specific than PPG irregularity alone.
+
+SSL pretraining is a different contribution. It does not use ECG or labels during pretraining. Instead, it uses large-scale unlabelled PPG to learn robust waveform representations. The SSL fine-tuned model did not beat ECG-supervised distillation at the selected operating point, but it achieved strong AUROC and AUPRC. This is useful because SSL is scalable: unlabelled PPG is easier to collect than ECG-adjudicated AF labels. In future work, SSL could be combined with ECG-supervised distillation by first pretraining on large unlabelled PPG and then fine-tuning with paired ECG supervision.
+
+### 9.7 Edge Deployment Interpretation
 
 The Edge AI integration demonstrates a practical deployment pathway but does not yet reproduce the full hybrid model on-device. The main hybrid model uses waveform CNNs, a Transformer, STFT processing, and gated fusion. The embedded model uses only the 17-feature vector and a compact Neuton CPU classifier. This is a reasonable engineering split: the main hybrid model explores retrospective performance, while the embedded model demonstrates feasibility under device constraints.
 
@@ -1380,14 +1699,16 @@ This is proof-of-concept evidence, not a final deployment result. It does not sh
 
 The next deployment step is to align the embedded feature extraction code with the Python feature-extraction pipeline, then test end-to-end inference on streaming PPG from the target hardware.
 
-### 9.6 Ablation and Remaining Error Analysis Gaps
+### 9.8 Ablation and Remaining Error Analysis Gaps
 
-The current results are strongest as an end-to-end feasibility study. The record-event-level error analysis in Section 7.10 adds useful evidence: false negatives tend to have lower mean quality and fewer accepted segments, while false positives often have persistent high-probability evidence across more segments. The added feature-level SQI ablation, neural branch ablation, feature-only logistic baseline, and aggregation ablation strengthen the evidence, but the study still does not isolate every design choice. The most useful next analyses would be:
+The current results are strongest as an end-to-end feasibility and comparative model-development study. The record-event-level error analysis in Section 7.11 adds useful evidence: false negatives tend to have lower mean quality and fewer accepted segments, while false positives often have persistent high-probability evidence across more segments. The added feature-level SQI ablation, neural branch ablation, feature-only logistic baseline, aggregation ablation, calibration analysis, selective-classification curves, ECG-supervised distillation, and SSL fine-tuning strengthen the evidence, but the study still does not isolate every design choice. The most useful next analyses would be:
 
 1. Full retrained neural SQI ablation comparing no SQI, SQI as features only, SQI filtering only, and the full SQI pipeline.
 2. Repeated-seed neural branch ablations and fusion-specific tuning, because the single retrained branch ablation shows strong waveform-only performance but does not prove a stable full-fusion gain.
-3. Deeper false-positive and false-negative review using waveform examples, rhythm context, signal quality, AF prevalence, and segment count.
-4. Specific analysis of p01 to determine whether its lower F1 is driven by low AF support, label timing, signal quality, patient mix, or waveform distribution shift.
+3. A fully consistent record-event-level evaluation for ECG-supervised and SSL models, matching the original `record_id+event_id` grouping where possible.
+4. Deeper false-positive and false-negative review using waveform examples, rhythm context, signal quality, AF prevalence, and segment count.
+5. Specific analysis of p01 to determine whether its lower F1 is driven by low AF support, label timing, signal quality, patient mix, or waveform distribution shift.
+6. Joint training of SSL-pretrained encoders with ECG-supervised distillation, because the two approaches are complementary.
 
 These analyses would move the evidence from retrospective feasibility toward robustness. Without them, the safest interpretation is that the method is promising on the evaluated p00-p02 subset but still needs broader validation.
 
@@ -1407,9 +1728,15 @@ Fifth, the evaluation is retrospective. A deployed screening system would requir
 
 Sixth, the ablations do not fully isolate every design choice. The feature-level SQI ablation, neural branch ablation, and aggregation ablation strengthen the analysis, but they do not replace a full repeated-seed study of SQI filtering, SQI features, quality weighting, and fusion under identical training conditions.
 
-Seventh, subgroup performance is not fully analysed. Prefix-level, quality-level, and segment-count error analyses are included, but this work does not yet quantify performance across age, sex, ethnicity, diagnosis group, skin tone, perfusion state, or other clinical and physiological strata.
+Seventh, some strategy results use slightly different record-level definitions. The reference gated-fusion and `QA-BeatFormer` results use `record_id+event_id` groups. ECG-supervised distillation and SSL fine-tuning are reported using post-hoc `record_id` aggregation because their exported paired-data pipelines contained mixed segment labels within some record identifiers. This does not invalidate the results, but it means the strategy table should be interpreted as a screening-system comparison rather than a perfectly controlled architecture-only comparison.
 
-Eighth, the embedded model is not the same as the main hybrid model. The deployment section demonstrates that a compact 17-feature model can be integrated into the Nordic/Zephyr inference path, but it does not prove that the full waveform/STFT/feature model runs on-device, that live PPG feature extraction is validated in firmware, or that clinical hardware performance has been established.
+Eighth, ECG-supervised distillation is PPG-only at inference but not PPG-only during training. This is a strength if paired ECG/PPG data are available for model development, but it should not be described as a purely PPG-trained model. Its clinical claim is that ECG can be used as privileged training supervision to improve a PPG-only deployed student.
+
+Ninth, the selective-classification results improve F1 by abstaining on lower-confidence records. This is clinically realistic for a screening system with a repeat-measurement or ECG-follow-up pathway, but it is not equivalent to improving full-coverage performance. Coverage must always be reported next to selective F1.
+
+Tenth, subgroup performance is not fully analysed. Prefix-level, quality-level, and segment-count error analyses are included, but this work does not yet quantify performance across age, sex, ethnicity, diagnosis group, skin tone, perfusion state, or other clinical and physiological strata.
+
+Eleventh, the embedded model is not the same as the main hybrid model. The deployment section demonstrates that a compact 17-feature model can be integrated into the Nordic/Zephyr inference path, but it does not prove that the full waveform/STFT/feature model runs on-device, that live PPG feature extraction is validated in firmware, or that clinical hardware performance has been established.
 
 ## 11. Future Work
 
@@ -1418,22 +1745,27 @@ Future work should prioritise:
 1. Broader validation across the remaining MIMIC-III-Ext-PPG prefixes and external/device-specific PPG datasets, to test whether the p00-p02 findings remain stable under wider data composition and acquisition conditions.
 2. Full neural SQI ablation studies, especially no-SQI, SQI-feature-only, SQI-filter-only, and full-SQI comparisons, plus repeated-seed branch ablations to test whether the observed waveform-only strength is stable.
 3. Multi-class rhythm classification, including atrial flutter, ectopy, pacing, AV block, tachycardia, and bradycardia, so that AF-like confounders are evaluated directly rather than excluded from the binary task.
-4. Deeper error analysis of false positives and false negatives using waveform examples, rhythm context, AF prevalence, signal quality, and low-support record-event groups.
-5. Soft SQI modelling, where lower-quality segments are down-weighted or assigned uncertainty rather than always rejected.
-6. Learned SQI models trained to distinguish motion artefact, poor contact, and low perfusion from physiologic rhythm irregularity.
-7. Threshold calibration for different operating modes, such as high-sensitivity clinician review and high-specificity user-facing alerts.
-8. Prefix and domain-adaptation methods to improve weaker subsets such as p01 and reduce distribution-specific performance variation.
-9. Demographic and clinical subgroup analysis to assess fairness, robustness, and coverage across patient groups.
-10. Embedded feature extraction in C so that the Nordic firmware can process live PPG rather than precomputed feature vectors.
-11. Prospective device-specific validation with synchronised ECG confirmation, including alert burden, no-call coverage, and user-state analysis.
+4. A consistent record-event-level rerun of ECG-supervised distillation and SSL fine-tuning, so that these stronger strategy results can be compared directly with the reference gated-fusion result under the same grouping definition.
+5. Joint SSL plus ECG-supervised training, using large-scale unlabelled PPG to initialise the encoder and paired ECG/PPG to refine rhythm-specific representations.
+6. Improved `PrecisionGuard-MIL`, including calibrated MIL outputs, stronger hard-negative mining, attention-weight visualisation, and record-event-level training with better validation-threshold stability.
+7. Deeper error analysis of false positives and false negatives using waveform examples, rhythm context, AF prevalence, signal quality, and low-support record-event groups.
+8. Soft SQI modelling, where lower-quality segments are down-weighted or assigned uncertainty rather than always rejected.
+9. Learned SQI models trained to distinguish motion artefact, poor contact, and low perfusion from physiologic rhythm irregularity.
+10. Threshold calibration for different operating modes, such as high-sensitivity clinician review, high-specificity user-facing alerts, and high-confidence selective classification with an explicit inconclusive state.
+11. Prefix and domain-adaptation methods to improve weaker subsets such as p01 and reduce distribution-specific performance variation.
+12. Demographic and clinical subgroup analysis to assess fairness, robustness, and coverage across patient groups.
+13. Embedded feature extraction in C so that the Nordic firmware can process live PPG rather than precomputed feature vectors.
+14. Prospective device-specific validation with synchronised ECG confirmation, including alert burden, no-call coverage, and user-state analysis.
 
 ## 12. Conclusion
 
-This project developed a PPG-only AF screening pipeline combining signal processing, SQI filtering, hybrid neural classification, record-event-level aggregation, and embedded Edge AI deployment feasibility work. The strongest evidence from this project is not that PPG can diagnose AF, nor that gated fusion is universally superior, but that an SQI-aware record-event-level PPG pipeline can produce promising retrospective AF-versus-SR screening performance on the evaluated p00-p02 subset. MIMIC PERform AF provided a small controlled sanity check, while MIMIC-III-Ext-PPG p00-p02 provided the main large-scale subset evaluation.
+This project developed a comparative PPG-based AF screening system combining signal processing, deep representation learning, record-level verification, calibration, selective classification, and embedded deployment feasibility. The core pipeline combines 30-second PPG preprocessing, SQI filtering, rhythm/morphology/quality feature extraction, neural classification, and record-level aggregation. MIMIC PERform AF provided a small controlled sanity check, while MIMIC-III-Ext-PPG p00-p02 provided the main large-scale retrospective evaluation.
 
-The final SQI model achieved record-event-level test accuracy 0.9536, sensitivity 0.8241, specificity 0.9729, precision 0.8194, F1 0.8217, AUROC 0.9272, and AUPRC 0.8365. The record-event bootstrap interval for F1 was 0.7988-0.8438, and SQI acceptance was high on the evaluated subset. The retained hybrid checkpoint improved F1 and precision over the all-17-feature logistic baseline, while its margin over the stronger rhythm-feature logistic condition was mainly a precision-oriented operating-point gain. Aggregation analysis showed that quality-weighted averaging was slightly stronger than a simple mean and more reliable than max-style pooling. A retrained neural branch ablation found that the waveform-only branch was the strongest retrained branch variant, so the strongest architectural conclusion is that learned PPG morphology is highly informative, while the incremental value of gated multi-branch fusion needs further repeated-seed validation. These results support retrospective feasibility of SQI-aware PPG AF screening on the evaluated p00-p02 subset and show that record-event-level aggregation provides a more useful screening summary than isolated segment decisions.
+The original SQI-conditioned gated-fusion model achieved record-event-level test accuracy 0.9536, sensitivity 0.8241, specificity 0.9729, precision 0.8194, F1 0.8217, AUROC 0.9272, and AUPRC 0.8365. This establishes that an SQI-aware PPG pipeline can produce useful AF-versus-SR screening performance on the evaluated subset. However, branch ablation showed that waveform-only retraining was competitive with full fusion, so the safest conclusion is not that gated fusion is universally superior. The stronger conclusion is that learned PPG morphology is highly informative and that the final screening decision benefits from explicit signal quality and record-level aggregation.
 
-The project also demonstrates a deployment pathway through a compact Nordic Edge AI model integrated into Zephyr firmware and exercised by a smoke-test harness. This embedded component is a compact feature-based feasibility demonstration, not an on-device reproduction of the full hybrid waveform/STFT model. Overall, the system is a retrospective screening pipeline: promising for AF-like rhythm screening from PPG, but requiring confirmatory ECG, broader full-release and external validation, hardware validation, prospective validation, and further robustness analysis before clinical use.
+The five-strategy comparison provides the strongest thesis contribution. ECG-supervised PPG distillation achieved the best full-coverage record-level result, with F1 0.8740, precision 0.9209, sensitivity 0.8316, specificity 0.9819, AUROC 0.9705, and AUPRC 0.9344, while still requiring only PPG at inference. SSL-pretrained PPG fine-tuning achieved record-level F1 0.8289, AUROC 0.9651, and AUPRC 0.9358. Calibration and selective classification showed that high-confidence PPG screening can reach F1 0.8817 at 80% coverage and F1 0.9222 at 50% coverage. These findings indicate that the most meaningful improvements come from reducing false positives through better training signals, better representation learning, and explicit uncertainty-aware decision policies.
+
+The project also demonstrates a deployment pathway through a compact Nordic Edge AI model integrated into Zephyr firmware and exercised by a smoke-test harness. This embedded component is a compact feature-based feasibility demonstration, not an on-device reproduction of the full hybrid waveform/STFT model. Overall, the system remains a retrospective screening pipeline rather than a clinical diagnostic device. It supports the feasibility of PPG-based AF-like rhythm screening, but it requires confirmatory ECG, broader full-release and external validation, multi-rhythm testing, hardware validation, prospective validation, and further robustness analysis before clinical use.
 
 ## References
 
@@ -1487,6 +1819,12 @@ The project also demonstrates a deployment pathway through a compact Nordic Edge
 
 [25] Elgendi, M. (2021). *PPG Signal Analysis: An Introduction Using MATLAB*. CRC Press.
 
+[26] Ilse, M., Tomczak, J. M., & Welling, M. (2018). Attention-based deep multiple instance learning. Proceedings of the 35th International Conference on Machine Learning.
+
+[27] Guo, C., Pleiss, G., Sun, Y., & Weinberger, K. Q. (2017). On calibration of modern neural networks. Proceedings of the 34th International Conference on Machine Learning.
+
+[28] Chen, T., Kornblith, S., Norouzi, M., & Hinton, G. (2020). A simple framework for contrastive learning of visual representations. Proceedings of the 37th International Conference on Machine Learning.
+
 ## Appendix A: Supplementary Technical Notes
 
 This appendix keeps only implementation-specific notes that are useful for reproducibility but would repeat the main argument if expanded in full.
@@ -1499,7 +1837,7 @@ The 30-second window length is retained because it matches the MIMIC-III-Ext-PPG
 
 ### A.2 Components Considered but Not Retained as Main Results
 
-The earlier project design considered synthetic pre-training and IMU-aware motion features. These are not used as headline results because the final measured experiment is based on real MIMIC-III-Ext-PPG p00-p02 data and PPG-derived SQI. Synthetic data may still be useful for stress testing, rare rhythm augmentation, or pre-training in future work. IMU features may improve free-living wearable robustness, but they are not part of the ICU-derived p00-p02 experiment reported here.
+The earlier project design considered synthetic pretraining and IMU-aware motion features. These are not used as headline results because the final measured experiment is based on real MIMIC-III-Ext-PPG p00-p02 data and PPG-derived SQI. In contrast, real-data PPG SSL pretraining was completed and is reported in Section 7.3. Synthetic data may still be useful for stress testing, rare rhythm augmentation, or pretraining in future work, but it is not part of the main evidence. IMU features may improve free-living wearable robustness, but they are not part of the ICU-derived p00-p02 experiment reported here.
 
 The binary AF-versus-SR setup is also a deliberate first step rather than a complete rhythm classifier. It isolates the central PPG AF screening question, but it does not test atrial flutter, ectopy, pacing, bradycardia, tachycardia, or other rhythm confounders. The preprocessing, SQI, feature extraction, aggregation, and embedded integration work are intended to be reusable for a future multi-class rhythm model.
 
@@ -1511,7 +1849,7 @@ The next deployment step would be to implement the feature extraction pipeline i
 
 ### A.4 Reproducibility Notes
 
-The final SQI run saves `metrics.json`, `best_model.pt`, prediction CSVs, threshold sweep CSVs, and training history. Additional final-paper evidence is generated by `analysis/final_paper_evidence.py`, `analysis/plot_final_paper_evidence.py`, `analysis/plot_waveform_error_examples.py`, `analyze_ppg_experiment.py`, `run_mimic_ext_p00_p01_p02_branch_ablation_array.slurm`, and `analysis/collect_branch_ablation_results.py`, producing SQI coverage tables, the feature-only logistic baseline, feature-level SQI ablation, neural branch ablation, aggregation-ablation tables, prefix reliability summaries, bootstrap confidence intervals, ROC/PR curves, calibration plots, and representative waveform examples. The most important reproducibility constraints are preserving the metadata fold split, preserving SQI preprocessing, and using the validation-selected record-event-level threshold rather than a test-optimised threshold. Changing the accepted segment set, the fold split, or the threshold-selection rule would change the reported operating point.
+The final SQI run saves `metrics.json`, `best_model.pt`, prediction CSVs, threshold sweep CSVs, and training history. Additional final-paper evidence is generated by `analysis/final_paper_evidence.py`, `analysis/plot_final_paper_evidence.py`, `analysis/plot_waveform_error_examples.py`, `analyze_ppg_experiment.py`, `run_mimic_ext_p00_p01_p02_branch_ablation_array.slurm`, `analysis/collect_branch_ablation_results.py`, `strategies/s1_calibration_s2_selective.py`, `train_precisionguard_mil.py`, `train_ppg_ssl_simclr.py`, `train_ppg_ssl_finetune.py`, and `train_physio_distill.py`. These scripts produce SQI coverage tables, the feature-only logistic baseline, feature-level SQI ablation, neural branch ablation, aggregation-ablation tables, prefix reliability summaries, bootstrap confidence intervals, ROC/PR curves, calibration plots, selective-classification curves, `PrecisionGuard-MIL` outputs, ECG-supervised distillation outputs, SSL pretraining/fine-tuning outputs, and representative waveform examples. The most important reproducibility constraints are preserving the metadata fold split, preserving SQI preprocessing, and using validation-selected thresholds rather than test-optimised thresholds. Changing the accepted segment set, the fold split, aggregation unit, or threshold-selection rule would change the reported operating point.
 
 | Reproducibility item | Value used in the final reported run |
 |---|---|
@@ -1528,6 +1866,16 @@ The final SQI run saves `metrics.json`, `best_model.pt`, prediction CSVs, thresh
 | Final training epochs | 18 epochs run; best epoch 8 |
 | Optimiser and scheduler | AdamW with cosine annealing |
 | Randomness control | Fixed experiment seeds where specified; repeated-seed branch validation remains future work |
+
+Additional comparative-strategy artefacts:
+
+| Strategy artefact | Location / role |
+|---|---|
+| Calibration and selective classification | `paper/results/s1_s2_posthoc/` |
+| `PrecisionGuard-MIL` | `/vol/bitbucket/mc1920/precisionguard_mil_20260514_063410/precisionguard_mil/` |
+| ECG-supervised PPG distillation | `/vol/bitbucket/mc1920/mimic_ext_paired_physio_distill_20260514_220436/` |
+| MIMIC PPG SSL pretraining | `/vol/bitbucket/mc1920/mimic_ppg_ssl_simclr_20260514_095946/` |
+| MIMIC PPG SSL fine-tuning | `/vol/bitbucket/mc1920/mimic_ppg_ssl_finetune_20260515_095109/` |
 
 ### A.5 Supplementary Figures and Evidence Files
 
@@ -1560,9 +1908,14 @@ The main generated tables and prediction files used for the final paper are:
 | `analysis/final_paper_saved_prediction_analysis/aggregation_method_summary.csv` | Aggregation ablation comparing quality-weighted mean, unweighted mean, median, maximum, and top-k pooling |
 | `analysis/final_paper_sqi_feature_ablation/sqi_feature_ablation_summary.csv` | Feature-level SQI ablation |
 | `analysis/final_paper_branch_ablation_summary.csv` | Neural branch ablation comparing full fusion, waveform-only, spectral-only, and feature-only neural models |
+| `paper/results/s1_s2_posthoc/calibration_results.csv` | Calibration comparison across temperature, Platt, isotonic, and beta-style logistic calibration |
+| `paper/results/s1_s2_posthoc/coverage_curves.csv` | Selective-classification coverage/F1 curves |
+| `/vol/bitbucket/mc1920/mimic_ext_paired_physio_distill_20260514_220436/posthoc_record_level_metrics.csv` | ECG-supervised PPG distillation post-hoc record-level aggregation table |
+| `/vol/bitbucket/mc1920/mimic_ppg_ssl_finetune_20260515_095109/metrics.json` | SSL-pretrained PPG fine-tuning segment and record-level metrics |
 | `figures/rhythm_morphology_fusionnet.svg` | Main architecture diagram |
 | `figures/record_level_roc_pr_curves.png` | Record-event-level ROC and precision-recall curves |
 | `figures/record_level_calibration.png` | Record-event-level calibration plot |
+| `paper/results/s1_s2_posthoc/figures/selective_classification_main.png` | High-confidence selective-classification figure |
 
 ## Appendix B: Ethical Considerations and Data Governance
 
